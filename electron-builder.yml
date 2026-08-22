@@ -2,16 +2,18 @@ appId: com.aiov.allinonevideo
 productName: All In One Video
 directories:
   output: dist
+# 直接复用 node_modules 里已解压的 Electron，绕开解压+重命名（杀软实时扫描会锁住导致 EPERM）
+electronDist: node_modules/electron/dist
 files:
   - out/**
   - package.json
-asarUnpack:
-  - resources/bin/**
 extraResources:
   - from: resources/bin
     to: bin
 win:
   target: nsis
+  icon: build/icon.png
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
+  shortcutName: All In One Video
