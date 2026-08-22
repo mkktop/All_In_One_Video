@@ -58,18 +58,28 @@ try {
       console.log(`  + ${f}`)
     }
   } else if (process.platform === 'darwin') {
-    const arch = process.arch === 'arm64' ? 'arm64' : 'amd64'
-    const base = `https://ffmpeg.martin-riedl.de/redirect/latest/macos/${arch}/release`
+    // 下载 x64 + arm64 两套，lipo 合成 universal 二进制。
+    // 否则 universal 打包时两个架构的临时目录里是同一个单架构 ffmpeg，
+    // @electron/universal 会拒绝合并（Intel Mac 上也无法运行）。
     for (const name of ['ffmpeg', 'ffprobe']) {
-      const zip = join(work, `${name}.zip`)
-      download(`${base}/${name}.zip`, zip)
-      unzip(zip, join(work, name))
-      // zip 内为单个可执行文件（可能在子目录）
-      const dir = join(work, name)
-      const file = existsSync(join(dir, name)) ? join(dir, name) : join(dir, readdirSync(dir)[0])
-      copyFileSync(file, join(binDir, name))
+      const slices = []
+      for (const arch of ['amd64', 'arm64']) {
+        const zip = join(work, `${name}-${arch}.zip`)
+        download(`https://ffmpeg.martin-riedl.de/redirect/latest/macos/${arch}/release/${name}.zip`, zip)
+        unzip(zip, join(work, `${name}-${arch}`))
+        // zip 内为单个可执行文件（可能在子目录）
+        const dir = join(work, `${name}-${arch}`)
+        const file = existsSync(join(dir, name)) ? join(dir, name) : join(dir, readdirSync(dir)[0])
+        slices.push(file)
+      }
+      run('lipo', ['-create', '-output', join(binDir, name), ...slices])
       chmodSync(join(binDir, name), 0o755)
-      console.log(`  + ${name} (${arch})`)
+      const info = spawnSync('lipo', ['-info', join(binDir, name)], { encoding: 'utf8' })
+      const archs = (info.stdout ?? '').replace(`Architectures in the input file ${join(binDir, name)}: `, '').trim()
+      if (!archs.includes('x86_64') || !archs.includes('arm64')) {
+        throw new Error(`${name} lipo 合成异常：${archs}`)
+      }
+      console.log(`  + ${name} (universal: ${archs})`)
     }
   } else {
     throw new Error(`暂不支持平台 ${process.platform}（win32/darwin 可用）`)

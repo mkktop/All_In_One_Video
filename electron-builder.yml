@@ -29,3 +29,5 @@ mac:
   icon: build/icon.png
   # CI 无签名证书，显式跳过 codesign（产物未签名，安装时右键-打开即可）
   identity: null
+  # ffmpeg/ffprobe 已由下载脚本 lipo 合成双架构，两边字节一致属预期，需白名单放行
+  x64ArchFiles: '**/bin/**'
