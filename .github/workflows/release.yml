@@ -40,9 +40,7 @@ jobs:
         run: npx electron-vite build
 
       - name: Package (${{ matrix.target }})
-        run: npx electron-builder ${{ matrix.target }} --config electron-builder.yml
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder ${{ matrix.target }} --config electron-builder.yml --publish never
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

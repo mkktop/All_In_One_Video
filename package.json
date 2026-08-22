@@ -12,7 +12,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "build:win": "electron-vite build && electron-builder --win --config electron-builder.yml"
+    "build:win": "electron-vite build && electron-builder --win --config electron-builder.yml --config.electronDist=node_modules/electron/dist"
   },
   "dependencies": {
     "react": "^19.2.8",

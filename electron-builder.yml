@@ -2,8 +2,6 @@ appId: com.aiov.allinonevideo
 productName: All In One Video
 directories:
   output: dist
-# 直接复用 node_modules 里已解压的 Electron，绕开解压+重命名（本地杀软实时扫描会锁住导致 EPERM）
-electronDist: node_modules/electron/dist
 # 只保留中英语言包，去掉 Electron 自带的 50+ 语言
 electronLanguages:
   - zh-CN
@@ -22,6 +20,12 @@ nsis:
   allowToChangeInstallationDirectory: true
   shortcutName: All In One Video
 mac:
-  target: dmg
+  # 单个 dmg 同时覆盖 Intel 与 Apple Silicon
+  target:
+    - target: dmg
+      arch:
+        - universal
   category: public.app-category.video
   icon: build/icon.png
+  # CI 无签名证书，显式跳过 codesign（产物未签名，安装时右键-打开即可）
+  identity: null
