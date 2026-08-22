@@ -1,0 +1,8 @@
+node_modules/
+out/
+dist/
+resources/bin/
+.tmp/
+.zcode/
+*.log
+.DS_Store

@@ -1,0 +1,17 @@
+appId: com.aiov.allinonevideo
+productName: All In One Video
+directories:
+  output: dist
+files:
+  - out/**
+  - package.json
+asarUnpack:
+  - resources/bin/**
+extraResources:
+  - from: resources/bin
+    to: bin
+win:
+  target: nsis
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
