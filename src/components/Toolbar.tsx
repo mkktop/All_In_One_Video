@@ -7,14 +7,16 @@ import { onMaximizedChanged } from '@/ipc'
 export const ACCENT = '#6366F1'
 export const ACCENT_HOVER = '#5457E0'
 
-/** 窗口控制按钮（frameless 自定义标题栏） */
-function CaptionButtons(): ReactNode {
+/** 窗口控制按钮（frameless 自定义标题栏；macOS 用系统红绿灯，不渲染） */
+function CaptionButtons(): ReactNode | null {
   const [maximized, setMaximized] = useState(false)
+  const platform = useEditor((s) => s.capabilities?.platform)
 
   useEffect(() => onMaximizedChanged(setMaximized), [])
 
-  const btn =
-    'titlebar-no-drag flex h-full w-11 items-center justify-center text-zinc-400 transition-colors hover:bg-white/10 hover:text-zinc-100'
+  if (platform === 'darwin') return null
+
+  const btn = 'titlebar-no-drag flex h-full w-11 items-center justify-center text-zinc-400 transition-colors hover:bg-white/10 hover:text-zinc-100'
   return (
     <div className="-mr-4 flex h-full items-stretch self-stretch">
       <button title="最小化" className={btn} onClick={() => void window.aiov.minimizeWindow()}>
@@ -128,6 +130,7 @@ function SettingsMenu({ onClose }: { onClose: () => void }): ReactNode {
 
 export function Toolbar(): ReactNode {
   const info = useEditor((s) => s.media.bin.find((b) => b.info.path === s.media.activePath)?.info ?? null)
+  const platform = useEditor((s) => s.capabilities?.platform)
   const scanning = useEditor((s) => s.media.scanning)
   const scanPercent = useEditor((s) => s.media.scanPercent)
   const page = useEditor((s) => s.page)
@@ -155,7 +158,10 @@ export function Toolbar(): ReactNode {
   }, [recentOpen])
 
   return (
-    <header className="titlebar-drag flex h-12 shrink-0 items-center gap-4 border-b border-black/50 bg-[#1D1D1F] px-4">
+    <header
+      className="titlebar-drag flex h-12 shrink-0 items-center gap-4 border-b border-black/50 bg-[#1D1D1F] px-4"
+      style={platform === 'darwin' ? { paddingLeft: '5rem' } : undefined}
+    >
       {/* Logo */}
       <div className="flex shrink-0 items-center gap-2.5">
         <span

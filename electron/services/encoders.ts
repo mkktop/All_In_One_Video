@@ -8,19 +8,31 @@ export interface EncoderChoice {
   args: string[]
 }
 
-const H264_CANDIDATES: EncoderChoice[] = [
-  { name: 'h264_nvenc', isHardware: true, args: ['-preset', 'p1', '-tune', 'll', '-rc', 'vbr', '-cq', '16'] },
-  { name: 'h264_qsv', isHardware: true, args: ['-preset', 'veryfast', '-global_quality', '16'] },
-  { name: 'h264_amf', isHardware: true, args: ['-quality', 'speed', '-rc', 'cqp', '-qp_i', '16', '-qp_p', '20'] },
-  { name: 'libx264', isHardware: false, args: ['-preset', 'ultrafast', '-crf', '16'] }
-]
+const H264_CANDIDATES: EncoderChoice[] =
+  process.platform === 'darwin'
+    ? [
+        { name: 'h264_videotoolbox', isHardware: true, args: ['-allow_sw', '1', '-q:v', '30'] },
+        { name: 'libx264', isHardware: false, args: ['-preset', 'veryfast', '-crf', '16'] }
+      ]
+    : [
+        { name: 'h264_nvenc', isHardware: true, args: ['-preset', 'p1', '-tune', 'll', '-rc', 'vbr', '-cq', '16'] },
+        { name: 'h264_qsv', isHardware: true, args: ['-preset', 'veryfast', '-global_quality', '16'] },
+        { name: 'h264_amf', isHardware: true, args: ['-quality', 'speed', '-rc', 'cqp', '-qp_i', '16', '-qp_p', '20'] },
+        { name: 'libx264', isHardware: false, args: ['-preset', 'ultrafast', '-crf', '16'] }
+      ]
 
-const HEVC_CANDIDATES: EncoderChoice[] = [
-  { name: 'hevc_nvenc', isHardware: true, args: ['-preset', 'p1', '-tune', 'll', '-rc', 'vbr', '-cq', '19'] },
-  { name: 'hevc_qsv', isHardware: true, args: ['-preset', 'veryfast', '-global_quality', '19'] },
-  { name: 'hevc_amf', isHardware: true, args: ['-quality', 'speed', '-rc', 'cqp', '-qp_i', '19', '-qp_p', '23'] },
-  { name: 'libx265', isHardware: false, args: ['-preset', 'ultrafast', '-crf', '22'] }
-]
+const HEVC_CANDIDATES: EncoderChoice[] =
+  process.platform === 'darwin'
+    ? [
+        { name: 'hevc_videotoolbox', isHardware: true, args: ['-allow_sw', '1', '-q:v', '35'] },
+        { name: 'libx265', isHardware: false, args: ['-preset', 'veryfast', '-crf', '22'] }
+      ]
+    : [
+        { name: 'hevc_nvenc', isHardware: true, args: ['-preset', 'p1', '-tune', 'll', '-rc', 'vbr', '-cq', '19'] },
+        { name: 'hevc_qsv', isHardware: true, args: ['-preset', 'veryfast', '-global_quality', '19'] },
+        { name: 'hevc_amf', isHardware: true, args: ['-quality', 'speed', '-rc', 'cqp', '-qp_i', '19', '-qp_p', '23'] },
+        { name: 'libx265', isHardware: false, args: ['-preset', 'ultrafast', '-crf', '22'] }
+      ]
 
 const cache = new Map<string, EncoderChoice>()
 

@@ -244,7 +244,9 @@ function createWindow(): void {
     minHeight: 680,
     backgroundColor: '#141414',
     show: false,
-    frame: false,
+    // Windows/Linux：完全无边框，自绘标题栏；macOS：hiddenInset 保留系统红绿灯（左侧）
+    frame: process.platform !== 'darwin',
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,

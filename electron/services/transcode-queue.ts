@@ -48,6 +48,7 @@ function videoArgs(codec: 'h264' | 'hevc' | 'vp9' | 'av1', quality: Quality, enc
   if (codec === 'av1') {
     return ['-preset', quality === 'high' ? '6' : '8', '-crf', String(v)]
   }
+  if (encName.includes('videotoolbox')) return ['-allow_sw', '1', '-q:v', String(v + 10)]
   if (encName.includes('nvenc')) return ['-preset', 'p4', '-cq', String(v)]
   if (encName.includes('qsv')) return ['-preset', 'veryfast', '-global_quality', String(v)]
   if (encName.includes('amf')) return ['-quality', 'balanced', '-rc', 'vbr_peak', '-b:v', `${v < 20 ? 12 : v < 24 ? 8 : 5}M`]
