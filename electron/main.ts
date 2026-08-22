@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Notification, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, shell } from 'electron'
 import { join, basename } from 'path'
 import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, readdirSync } from 'fs'
 import { createHash } from 'crypto'
@@ -245,7 +245,7 @@ function createWindow(): void {
     backgroundColor: '#141414',
     show: false,
     // Windows/Linux：完全无边框，自绘标题栏；macOS：hiddenInset 保留系统红绿灯（左侧）
-    frame: process.platform !== 'darwin',
+    frame: process.platform === 'darwin',
     ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -287,6 +287,8 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  // 去掉默认英文菜单栏（File/Edit/View…），快捷键由渲染进程自行处理
+  Menu.setApplicationMenu(null)
   registerIpc()
   createWindow()
   transcodeQueue.setConcurrency(loadSettings().transcodeConcurrency)
