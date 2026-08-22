@@ -1,5 +1,16 @@
 import { create } from 'zustand'
-import type { Capabilities, CutMode, CutRequest, JobEvent, JobProgress, JobResult, MediaInfo, MultiCutRequest } from '@shared/types'
+import type {
+  AppSettings,
+  Capabilities,
+  CutMode,
+  CutRequest,
+  JobEvent,
+  JobProgress,
+  JobResult,
+  MediaInfo,
+  MultiCutRequest,
+  TrackMode
+} from '@shared/types'
 import { videoEl } from '@/lib/playerRef'
 
 export interface JobEntry {
@@ -14,26 +25,46 @@ export interface JobEntry {
   request?: CutRequest | MultiCutRequest
 }
 
-export interface ClipSegment {
+/** 素材库条目 */
+export interface BinEntry {
+  info: MediaInfo
+  keyframes: number[]
+  waveformUrl: string | null
+}
+
+/** 主轨道片段（可来自不同素材） */
+export interface TimelineClip {
   id: string
+  path: string
+  fileName: string
   start: number
   end: number
 }
 
+export type ExportKind = 'cut' | 'merge' | 'audio' | 'video'
+
+interface ExportDialogState {
+  open: boolean
+  kind: ExportKind
+  defaultName: string
+}
+
 interface HistorySnapshot {
   selection: EditorState['selection']
-  segments: ClipSegment[]
+  clips: TimelineClip[]
 }
 
 interface EditorState {
+  page: 'edit' | 'transcode'
   capabilities: Capabilities | null
+  settings: AppSettings
+  exportDialog: ExportDialogState
   media: {
-    info: MediaInfo | null
-    keyframes: number[]
+    bin: BinEntry[]
+    activePath: string | null
     scanning: boolean
     scanPercent: number
   }
-  waveform: { forPath: string | null; url: string | null }
   playback: {
     currentTime: number
     playing: boolean
@@ -46,16 +77,23 @@ interface EditorState {
     outPoint: number | null
     mode: CutMode
   }
-  segments: ClipSegment[]
+  clips: TimelineClip[]
   past: HistorySnapshot[]
   future: HistorySnapshot[]
   jobs: Record<string, JobEntry>
   jobOrder: string[]
 
   init: () => Promise<void>
+  setPage: (page: 'edit' | 'transcode') => void
+  loadSettings: () => Promise<void>
+  saveSettings: (patch: Partial<AppSettings>) => Promise<void>
+  openExportDialog: (kind: ExportKind) => void
+  closeExportDialog: () => void
+  confirmExport: (name: string) => Promise<void>
   openMedia: () => Promise<void>
   openMediaPath: (path: string) => Promise<void>
   applyAutoOpened: (r: { info: MediaInfo; keyframes: number[] }) => void
+  setActivePath: (path: string) => void
   applyWaveform: (r: { path: string; pngPath: string | null }) => void
   setScanProgress: (percent: number, done: boolean) => void
   setCurrentTime: (t: number) => void
@@ -72,32 +110,39 @@ interface EditorState {
   setOutDirect: (t: number) => void
   clearSelection: () => void
   setMode: (mode: CutMode) => void
-  addSegment: () => void
-  removeSegment: (id: string) => void
-  loadSegment: (id: string) => void
-  clearSegments: () => void
+
+  addClipFromSelection: () => void
+  removeClip: (id: string) => void
+  moveClip: (fromIdx: number, toIdx: number) => void
+  trimClip: (id: string, edge: 'start' | 'end', value: number) => void
+  beginClipDrag: () => void
+  clearClips: () => void
+  loadClipToSelection: (id: string) => void
   undo: () => void
   redo: () => void
-  exportCut: () => Promise<void>
-  exportMerge: () => Promise<void>
+  exportCut: (tracks?: TrackMode, outputName?: string) => Promise<void>
+  exportMerge: (outputName?: string) => Promise<void>
   retryJob: (jobId: string) => Promise<void>
   cancelJob: (jobId: string) => Promise<void>
   applyJobEvent: (e: JobEvent) => void
 }
 
-const frameDur = (s: EditorState): number => 1 / (s.media.info?.video?.fps || 25)
+const frameDurOf = (s: EditorState): number => {
+  const active = s.media.bin.find((b) => b.info.path === s.media.activePath)
+  return 1 / (active?.info.video?.fps || 25)
+}
 
-let segSeq = 0
-function newSegId(): string {
-  segSeq += 1
-  return `seg-${Date.now().toString(36)}-${segSeq}`
+let seq = 0
+function newId(): string {
+  seq += 1
+  return `clip-${Date.now().toString(36)}-${seq}`
 }
 
 export const useEditor = create<EditorState>((set, get) => {
-  /** 可撤销的 selection/segments 变更：先快照再应用 */
+  /** 可撤销的 selection/clips 变更：先快照再应用 */
   const commit = (mutate: (s: EditorState) => Partial<EditorState>): void => {
     set((s) => {
-      const snap: HistorySnapshot = { selection: s.selection, segments: s.segments }
+      const snap: HistorySnapshot = { selection: s.selection, clips: s.clips }
       const patch = mutate(s)
       return { ...patch, past: [...s.past.slice(-59), snap], future: [] }
     })
@@ -111,26 +156,30 @@ export const useEditor = create<EditorState>((set, get) => {
     }))
   }
 
-  const loadMediaResult = (r: { info: MediaInfo; keyframes: number[] }): void => {
-    set((s) => ({
-      media: { info: r.info, keyframes: r.keyframes, scanning: false, scanPercent: 100 },
-      waveform: { forPath: r.info.path, url: null },
-      playback: { ...s.playback, currentTime: 0, playing: false },
-      // 换文件是历史边界：清空选择、片段与撤销栈
-      selection: { inPoint: null, outPoint: null, mode: s.selection.mode },
-      segments: [],
-      past: [],
-      future: []
-    }))
+  /** 打开视频 → 加入素材库并激活（轨道保留） */
+  const loadIntoBin = (r: { info: MediaInfo; keyframes: number[] }): void => {
+    set((s) => {
+      const bin = [
+        ...s.media.bin.filter((b) => b.info.path !== r.info.path),
+        { info: r.info, keyframes: r.keyframes, waveformUrl: null }
+      ].slice(-10)
+      return {
+        media: { ...s.media, bin, activePath: r.info.path, scanning: false, scanPercent: 100 },
+        playback: { ...s.playback, currentTime: 0, playing: false },
+        selection: { inPoint: null, outPoint: null, mode: s.selection.mode }
+      }
+    })
   }
 
   return {
+    page: 'edit',
     capabilities: null,
-    media: { info: null, keyframes: [], scanning: false, scanPercent: 0 },
-    waveform: { forPath: null, url: null },
+    settings: { exportDir: null, container: 'mp4', transcodeConcurrency: 2 },
+    exportDialog: { open: false, kind: 'cut', defaultName: '' },
+    media: { bin: [], activePath: null, scanning: false, scanPercent: 0 },
     playback: { currentTime: 0, playing: false, rate: 1, volume: 1, muted: false },
     selection: { inPoint: null, outPoint: null, mode: 'keyframe-snap' },
-    segments: [],
+    clips: [],
     past: [],
     future: [],
     jobs: {},
@@ -145,54 +194,118 @@ export const useEditor = create<EditorState>((set, get) => {
       }
     },
 
+    setPage: (page) => {
+      // 离开剪辑页时暂停播放
+      if (page !== 'edit') videoEl.current?.pause()
+      set({ page })
+    },
+
+    loadSettings: async () => {
+      try {
+        set({ settings: await window.aiov.getSettings() })
+      } catch {
+        // 设置读取失败用默认值
+      }
+    },
+
+    saveSettings: async (patch) => {
+      try {
+        set({ settings: await window.aiov.setSettings(patch) })
+      } catch {
+        // 保存失败仅影响持久化
+      }
+    },
+
+    openExportDialog: (kind) => {
+      const s = get()
+      const active = s.media.bin.find((b) => b.info.path === s.media.activePath)
+      if (!active && kind !== 'merge') return
+      if (kind === 'merge' && s.clips.length === 0) return
+      const base = (active?.info.fileName ?? s.clips[0]?.fileName ?? '视频').replace(/\.[^.]+$/, '')
+      const d = new Date()
+      const p = (n: number) => String(n).padStart(2, '0')
+      const ts = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
+      const defaultName =
+        kind === 'audio'
+          ? `${base}_音频_${ts}`
+          : kind === 'video'
+            ? `${base}_无音轨_${ts}`
+            : kind === 'merge'
+              ? `${base}_合并${s.clips.length}段_${ts}`
+              : `${base}_剪辑_${ts}`
+      set({ exportDialog: { open: true, kind, defaultName } })
+    },
+
+    closeExportDialog: () => {
+      set((s) => ({ exportDialog: { ...s.exportDialog, open: false } }))
+    },
+
+    confirmExport: async (name) => {
+      const { exportDialog } = get()
+      if (!exportDialog.open) return
+      get().closeExportDialog()
+      const n = name.trim() || undefined
+      if (exportDialog.kind === 'merge') await get().exportMerge(n)
+      else if (exportDialog.kind === 'audio') await get().exportCut('audio-only', n)
+      else if (exportDialog.kind === 'video') await get().exportCut('video-only', n)
+      else await get().exportCut('all', n)
+    },
+
     openMedia: async () => {
-      set((s) => ({
-        media: { info: null, keyframes: [], scanning: true, scanPercent: 0 },
-        waveform: { forPath: null, url: null },
-        selection: { inPoint: null, outPoint: null, mode: s.selection.mode },
-        segments: [],
-        past: [],
-        future: [],
-        playback: { ...s.playback, currentTime: 0, playing: false }
-      }))
+      set((s) => ({ media: { ...s.media, scanning: true, scanPercent: 0 } }))
       const r = await window.aiov.openMedia()
       if (!r) {
         set((s) => ({ media: { ...s.media, scanning: false } }))
         return
       }
-      loadMediaResult(r)
+      loadIntoBin(r)
     },
 
     openMediaPath: async (path) => {
-      set((s) => ({
-        media: { info: null, keyframes: [], scanning: true, scanPercent: 0 },
-        waveform: { forPath: null, url: null },
-        selection: { inPoint: null, outPoint: null, mode: s.selection.mode },
-        segments: [],
-        past: [],
-        future: [],
-        playback: { ...s.playback, currentTime: 0, playing: false }
-      }))
+      // 素材已在库中 → 直接激活
+      const existed = get().media.bin.find((b) => b.info.path === path)
+      if (existed) {
+        set((s) => ({
+          media: { ...s.media, activePath: path },
+          selection: { inPoint: null, outPoint: null, mode: s.selection.mode },
+          playback: { ...s.playback, currentTime: 0, playing: false }
+        }))
+        videoEl.current?.pause()
+        return
+      }
+      set((s) => ({ media: { ...s.media, scanning: true, scanPercent: 0 } }))
       try {
         const r = await window.aiov.openMediaPath(path)
-        loadMediaResult(r)
+        loadIntoBin(r)
       } catch (err) {
         console.info(`[aiov:media] 打开失败 ${path}: ${err instanceof Error ? err.message : String(err)}`)
-        set({ media: { info: null, keyframes: [], scanning: false, scanPercent: 0 } })
+        set((s) => ({ media: { ...s.media, scanning: false, scanPercent: 0 } }))
       }
     },
 
-    applyAutoOpened: (r) => loadMediaResult(r),
+    applyAutoOpened: (r) => loadIntoBin(r),
+
+    setActivePath: (path) => {
+      if (get().media.activePath === path) return
+      set((s) => ({
+        media: { ...s.media, activePath: path },
+        selection: { inPoint: null, outPoint: null, mode: s.selection.mode },
+        playback: { ...s.playback, currentTime: 0, playing: false }
+      }))
+      videoEl.current?.pause()
+    },
 
     applyWaveform: (r) => {
-      const cur = get().media.info?.path
-      if (cur !== r.path) return
-      set({
-        waveform: {
-          forPath: r.path,
-          url: r.pngPath ? 'file:///' + encodeURI(r.pngPath.replace(/\\/g, '/')) : null
+      set((s) => ({
+        media: {
+          ...s.media,
+          bin: s.media.bin.map((b) =>
+            b.info.path === r.path
+              ? { ...b, waveformUrl: r.pngPath ? 'file:///' + encodeURI(r.pngPath.replace(/\\/g, '/')) : null }
+              : b
+          )
         }
-      })
+      }))
     },
 
     setScanProgress: (percent, done) => {
@@ -227,41 +340,43 @@ export const useEditor = create<EditorState>((set, get) => {
     },
 
     seek: (t) => {
-      const dur = get().media.info?.durationSec ?? 0
+      const s = get()
+      const active = s.media.bin.find((b) => b.info.path === s.media.activePath)
+      const dur = active?.info.durationSec ?? 0
       const nt = Math.min(Math.max(t, 0), dur)
       const v = videoEl.current
       if (v) v.currentTime = nt
-      set((s) => ({ playback: { ...s.playback, currentTime: nt } }))
+      set({ playback: { ...s.playback, currentTime: nt } })
     },
 
     stepFrames: (n) => {
-      const fd = frameDur(get())
+      const fd = frameDurOf(get())
       const target = (Math.round(get().playback.currentTime / fd) + n) * fd
       get().seek(target)
     },
 
     setIn: (t) => {
       const s = get()
-      const dur = s.media.info?.durationSec ?? 0
+      const dur = s.media.bin.find((b) => b.info.path === s.media.activePath)?.info.durationSec ?? 0
       let v = Math.min(Math.max(t ?? s.playback.currentTime, 0), dur)
       const out = s.selection.outPoint
-      if (out != null && v >= out) v = Math.max(0, out - frameDur(s))
+      if (out != null && v >= out) v = Math.max(0, out - frameDurOf(s))
       commit((cur) => ({ selection: { ...cur.selection, inPoint: v } }))
     },
 
     setOut: (t) => {
       const s = get()
-      const dur = s.media.info?.durationSec ?? 0
+      const dur = s.media.bin.find((b) => b.info.path === s.media.activePath)?.info.durationSec ?? 0
       let v = Math.min(Math.max(t ?? s.playback.currentTime, 0), dur)
       const inn = s.selection.inPoint
-      if (inn != null && v <= inn) v = Math.min(dur, inn + frameDur(s))
+      if (inn != null && v <= inn) v = Math.min(dur, inn + frameDurOf(s))
       commit((cur) => ({ selection: { ...cur.selection, outPoint: v } }))
     },
 
     // 时间轴拖拽的实时路径：不进撤销栈（避免拖动刷爆历史）
     setInDirect: (t) => {
       const s = get()
-      const dur = s.media.info?.durationSec ?? 0
+      const dur = s.media.bin.find((b) => b.info.path === s.media.activePath)?.info.durationSec ?? 0
       let v = Math.min(Math.max(t, 0), dur)
       const out = s.selection.outPoint
       if (out != null && v >= out) v = Math.max(0, out - 0.001)
@@ -270,7 +385,7 @@ export const useEditor = create<EditorState>((set, get) => {
 
     setOutDirect: (t) => {
       const s = get()
-      const dur = s.media.info?.durationSec ?? 0
+      const dur = s.media.bin.find((b) => b.info.path === s.media.activePath)?.info.durationSec ?? 0
       let v = Math.min(Math.max(t, 0), dur)
       const inn = s.selection.inPoint
       if (inn != null && v <= inn) v = Math.min(dur, inn + 0.001)
@@ -285,32 +400,79 @@ export const useEditor = create<EditorState>((set, get) => {
       set((s) => ({ selection: { ...s.selection, mode } }))
     },
 
-    addSegment: () => {
+    addClipFromSelection: () => {
       const s = get()
+      const active = s.media.bin.find((b) => b.info.path === s.media.activePath)
+      if (!active) return
       const { inPoint, outPoint } = s.selection
       if (inPoint == null || outPoint == null || outPoint <= inPoint) return
-      const seg: ClipSegment = { id: newSegId(), start: inPoint, end: outPoint }
+      const clip: TimelineClip = {
+        id: newId(),
+        path: active.info.path,
+        fileName: active.info.fileName,
+        start: inPoint,
+        end: outPoint
+      }
       commit((cur) => ({
-        segments: [...cur.segments, seg],
+        clips: [...cur.clips, clip],
         selection: { ...cur.selection, inPoint: null, outPoint: null }
       }))
-      get().seek(seg.end)
+      get().seek(clip.end)
     },
 
-    removeSegment: (id) => {
-      commit((cur) => ({ segments: cur.segments.filter((sg) => sg.id !== id) }))
+    removeClip: (id) => {
+      commit((cur) => ({ clips: cur.clips.filter((c) => c.id !== id) }))
     },
 
-    loadSegment: (id) => {
+    moveClip: (fromIdx, toIdx) => {
+      commit((cur) => {
+        if (fromIdx === toIdx || fromIdx < 0 || fromIdx >= cur.clips.length) return {}
+        const clips = [...cur.clips]
+        const [moved] = clips.splice(fromIdx, 1)
+        clips.splice(Math.max(0, Math.min(clips.length, toIdx)), 0, moved)
+        return { clips }
+      })
+    },
+
+    /** 拖动边缘修剪：直接改值不进历史（beginClipDrag 已在拖前快照） */
+    trimClip: (id, edge, value) => {
+      set((s) => ({
+        clips: s.clips.map((c) => {
+          if (c.id !== id) return c
+          const dur = s.media.bin.find((b) => b.info.path === c.path)?.info.durationSec ?? value
+          if (edge === 'start') {
+            const v = Math.min(Math.max(value, 0), c.end - 0.05)
+            return { ...c, start: Math.min(v, dur) }
+          }
+          const v = Math.max(Math.min(value, dur), c.start + 0.05)
+          return { ...c, end: v }
+        })
+      }))
+    },
+
+    beginClipDrag: () => {
+      set((s) => ({
+        past: [...s.past.slice(-59), { selection: s.selection, clips: s.clips }],
+        future: []
+      }))
+    },
+
+    clearClips: () => {
+      commit(() => ({ clips: [] }))
+    },
+
+    loadClipToSelection: (id) => {
       const s = get()
-      const seg = s.segments.find((sg) => sg.id === id)
-      if (!seg) return
-      commit((cur) => ({ selection: { ...cur.selection, inPoint: seg.start, outPoint: seg.end } }))
-      get().seek(seg.start)
-    },
-
-    clearSegments: () => {
-      commit(() => ({ segments: [] }))
+      const clip = s.clips.find((c) => c.id === id)
+      if (!clip) return
+      const source = s.media.bin.find((b) => b.info.path === clip.path)
+      if (!source) return
+      set((cur) => ({
+        media: cur.media.activePath === clip.path ? cur.media : { ...cur.media, activePath: clip.path },
+        selection: { ...cur.selection, inPoint: clip.start, outPoint: clip.end }
+      }))
+      videoEl.current?.pause()
+      get().seek(clip.start)
     },
 
     undo: () => {
@@ -319,9 +481,9 @@ export const useEditor = create<EditorState>((set, get) => {
       if (!prev) return
       set({
         past: s.past.slice(0, -1),
-        future: [{ selection: s.selection, segments: s.segments }, ...s.future].slice(0, 60),
+        future: [{ selection: s.selection, clips: s.clips }, ...s.future].slice(0, 60),
         selection: prev.selection,
-        segments: prev.segments
+        clips: prev.clips
       })
     },
 
@@ -330,41 +492,50 @@ export const useEditor = create<EditorState>((set, get) => {
       const next = s.future[0]
       if (!next) return
       set({
-        past: [...s.past, { selection: s.selection, segments: s.segments }],
+        past: [...s.past, { selection: s.selection, clips: s.clips }],
         future: s.future.slice(1),
         selection: next.selection,
-        segments: next.segments
+        clips: next.clips
       })
     },
 
-    exportCut: async () => {
-      const { media, selection } = get()
-      if (!media.info || selection.inPoint == null || selection.outPoint == null) return
-      if (selection.outPoint <= selection.inPoint) return
+    exportCut: async (tracks: TrackMode = 'all', outputName?: string) => {
+      const s = get()
+      const active = s.media.bin.find((b) => b.info.path === s.media.activePath)
+      if (!active) return
+      // 未设入出点时作用于全片
+      const startSec = s.selection.inPoint ?? 0
+      const endSec = s.selection.outPoint ?? active.info.durationSec
+      if (endSec <= startSec) return
+      const labelSuffix =
+        tracks === 'audio-only' ? '（提取音频）' : tracks === 'video-only' ? '（仅视频）' : ''
       await submitJob(
         {
-          inputPath: media.info.path,
-          startSec: selection.inPoint,
-          endSec: selection.outPoint,
-          mode: selection.mode,
-          container: 'mp4'
+          inputPath: active.info.path,
+          startSec,
+          endSec,
+          mode: s.selection.mode,
+          container: s.settings.container,
+          tracks,
+          outputDir: s.settings.exportDir ?? undefined,
+          outputName
         },
-        media.info.fileName
+        active.info.fileName + labelSuffix
       )
     },
 
-    exportMerge: async () => {
-      const { media, selection, segments } = get()
-      if (!media.info || segments.length === 0) return
-      const sorted = [...segments].sort((a, b) => a.start - b.start)
+    exportMerge: async (outputName?: string) => {
+      const s = get()
+      if (s.clips.length === 0) return
       await submitJob(
         {
-          inputPath: media.info.path,
-          container: 'mp4',
-          mode: selection.mode,
-          ranges: sorted.map((sg) => ({ startSec: sg.start, endSec: sg.end }))
+          clips: s.clips.map((c) => ({ path: c.path, startSec: c.start, endSec: c.end })),
+          mode: s.selection.mode,
+          container: s.settings.container,
+          outputDir: s.settings.exportDir ?? undefined,
+          outputName
         },
-        `${media.info.fileName}（${sorted.length} 段合并）`
+        `合并 ${s.clips.length} 段`
       )
     },
 

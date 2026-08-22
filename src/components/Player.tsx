@@ -81,8 +81,22 @@ function MuteIcon(): ReactNode {
   )
 }
 
+function CtlBtn({ label, hint, onClick, disabled }: { label: string; hint?: string; onClick: () => void; disabled?: boolean }): ReactNode {
+  return (
+    <button
+      title={hint ? `${label}（${hint}）` : label}
+      disabled={disabled}
+      onClick={onClick}
+      className="flex h-7 items-center gap-1 rounded border border-zinc-700 bg-zinc-800 px-2 text-[11px] font-medium text-zinc-200 transition-colors hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-40"
+    >
+      {label}
+      {hint && <span className="font-mono text-[9px] text-zinc-500">{hint}</span>}
+    </button>
+  )
+}
+
 export function Player(): ReactNode {
-  const info = useEditor((s) => s.media.info)
+  const info = useEditor((s) => s.media.bin.find((b) => b.info.path === s.media.activePath)?.info ?? null)
   const playing = useEditor((s) => s.playback.playing)
   const currentTime = useEditor((s) => s.playback.currentTime)
   const rate = useEditor((s) => s.playback.rate)
@@ -123,7 +137,9 @@ export function Player(): ReactNode {
     const onErr = () => {
       const code = v.error?.code ?? 0
       setPreviewError(`${MEDIA_ERR[code] ?? `未知错误(${code})`}（错误码 ${code}）`)
-      console.info(`[aiov:player] 预览失败 code=${code} codec=${useEditor.getState().media.info?.video?.codec ?? '?'}`)
+      const st = useEditor.getState()
+      const codec = st.media.bin.find((b) => b.info.path === st.media.activePath)?.info.video?.codec ?? '?'
+      console.info(`[aiov:player] 预览失败 code=${code} codec=${codec}`)
     }
     let handle = 0
     const tick = (_now: number, meta: RVFCMetadata): void => {
@@ -212,7 +228,16 @@ export function Player(): ReactNode {
         <IconButton title="下一帧（→）" onClick={() => useEditor.getState().stepFrames(1)}>
           <StepFwdIcon />
         </IconButton>
-        <span className="ml-1 font-mono text tabular-nums text-zinc-300">
+        <div className="mx-2 flex items-center gap-1">
+          <CtlBtn label="设入点" hint="I" disabled={!info} onClick={() => useEditor.getState().setIn()} />
+          <CtlBtn label="设出点" hint="O" disabled={!info} onClick={() => useEditor.getState().setOut()} />
+          <CtlBtn
+            label="＋加入轨道"
+            disabled={!info}
+            onClick={() => useEditor.getState().addClipFromSelection()}
+          />
+        </div>
+        <span className="ml-1 font-mono tabular-nums text-zinc-300">
           {formatTimecode(currentTime, fps)}
           <span className="text-zinc-600"> / {formatShort(info.durationSec)}</span>
         </span>

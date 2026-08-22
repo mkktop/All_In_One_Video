@@ -1,15 +1,25 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import type { Capabilities, CutRequest, JobEvent, KeyframeScanProgress, MediaInfo, MultiCutRequest, WaveformResult } from '../shared/types'
+import type {
+  AppSettings,
+  Capabilities,
+  CutRequest,
+  JobEvent,
+  KeyframeScanProgress,
+  MediaInfo,
+  MultiCutRequest,
+  TranscodeItemRequest,
+  WaveformResult
+} from '../shared/types'
 
 export interface OpenMediaResult {
   info: MediaInfo
   keyframes: number[]
 }
 
-const EVENT_CHANNELS = ['job:event', 'media:keyframeProgress', 'media:auto-opened', 'media:waveform'] as const
+const EVENT_CHANNELS = ['job:event', 'media:keyframeProgress', 'media:auto-opened', 'media:waveform', 'win:maximizedChanged'] as const
 export type EventChannel = (typeof EVENT_CHANNELS)[number]
 
-type EventPayload = JobEvent | KeyframeScanProgress | OpenMediaResult | WaveformResult
+type EventPayload = JobEvent | KeyframeScanProgress | OpenMediaResult | WaveformResult | boolean
 
 const api = {
   capabilities: (): Promise<Capabilities> => ipcRenderer.invoke('app:capabilities'),
@@ -20,12 +30,35 @@ const api = {
 
   recentFiles: (): Promise<string[]> => ipcRenderer.invoke('app:recentFiles'),
 
+  getSettings: (): Promise<AppSettings> => ipcRenderer.invoke('settings:get'),
+
+  setSettings: (patch: Partial<AppSettings>): Promise<AppSettings> => ipcRenderer.invoke('settings:set', patch),
+
+  pickDirectory: (): Promise<string | null> => ipcRenderer.invoke('dialog:pickDir'),
+
   submitCut: (req: CutRequest | MultiCutRequest): Promise<{ jobId: string }> => ipcRenderer.invoke('cut:submit', req),
 
   cancelJob: (jobId: string): Promise<void> => ipcRenderer.invoke('job:cancel', jobId),
 
   /** 拖拽的 File 对象 → 本地路径（File.path 已移除，官方迁移方式） */
   getPathForFile: (file: File): string => webUtils.getPathForFile(file),
+
+  minimizeWindow: (): Promise<void> => ipcRenderer.invoke('win:minimize'),
+
+  toggleMaximize: (): Promise<void> => ipcRenderer.invoke('win:toggleMaximize'),
+
+  closeWindow: (): Promise<void> => ipcRenderer.invoke('win:close'),
+
+  submitTranscode: (items: TranscodeItemRequest[]): Promise<{ jobIds: string[] }> =>
+    ipcRenderer.invoke('transcode:submit', items),
+
+  cancelTranscode: (jobId: string): Promise<void> => ipcRenderer.invoke('transcode:cancel', jobId),
+
+  pickVideoFiles: (): Promise<string[]> => ipcRenderer.invoke('transcode:pickFiles'),
+
+  pickVideoFolder: (): Promise<string[]> => ipcRenderer.invoke('transcode:pickFolder'),
+
+  setTranscodeConcurrency: (n: number): Promise<number> => ipcRenderer.invoke('transcode:setConcurrency', n),
 
   openPath: (p: string): Promise<void> => ipcRenderer.invoke('shell:openPath', p),
 

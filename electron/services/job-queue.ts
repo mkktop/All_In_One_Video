@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto'
 import { existsSync, writeFileSync } from 'fs'
 import { mkdir, rm, rename } from 'fs/promises'
 import { basename, dirname, join } from 'path'
-import type { CutMode, CutRequest, JobEvent, JobState, MediaInfo, MultiCutRequest } from '../../shared/types'
+import type { CutMode, CutRequest, JobEvent, JobState, MediaInfo, MultiCutRequest, TrackMode } from '../../shared/types'
 import { planSegments } from '../../shared/planner'
 import { FfmpegError, runFfmpeg } from './ffmpeg-runner'
 import { probeMedia } from './probe'
@@ -35,13 +35,28 @@ function timestamp(): string {
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
 }
 
-function buildOutputPath(inputPath: string, container: 'mp4' | 'mkv', suffix: string): string {
-  const dir = dirname(inputPath)
-  const base = basename(inputPath).replace(/\.[^.]+$/, '')
-  let out = join(dir, `${base}_cut_${suffix}_${timestamp()}.${container}`)
+/** 文件名合法化：去掉 Windows 非法字符与首尾空白/点 */
+function sanitizeName(name: string): string {
+  const cleaned = name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '').replace(/^[\s.]+|[\s.]+$/g, '')
+  return cleaned.length > 0 ? cleaned.slice(0, 180) : `cut_${timestamp()}`
+}
+
+function buildOutputPath(
+  inputPath: string,
+  ext: string,
+  suffix: string,
+  outputDir?: string,
+  outputName?: string
+): string {
+  const dir = outputDir && outputDir.trim().length > 0 ? outputDir : dirname(inputPath)
+  const base =
+    outputName && outputName.trim().length > 0
+      ? sanitizeName(outputName)
+      : `${basename(inputPath).replace(/\.[^.]+$/, '')}_cut_${suffix}_${timestamp()}`
+  let out = join(dir, `${base}.${ext}`)
   let i = 1
   while (existsSync(out)) {
-    out = join(dir, `${base}_cut_${suffix}_${timestamp()}-${i++}.${container}`)
+    out = join(dir, `${base}-${i++}.${ext}`)
   }
   return out
 }
@@ -69,7 +84,8 @@ function buildCopyArgs(
   dur: number,
   hasVideo: boolean,
   container: 'mp4' | 'mkv',
-  out: string
+  out: string,
+  tracks: TrackMode = 'all'
 ): string[] {
   const args = [
     '-y',
@@ -86,7 +102,9 @@ function buildCopyArgs(
     '-t',
     dur.toFixed(6)
   ]
-  if (hasVideo) {
+  if (tracks === 'video-only') {
+    args.push('-map', '0:v:0')
+  } else if (hasVideo) {
     args.push('-map', '0:v:0', '-map', '0:a?')
   } else {
     args.push('-map', '0:a:0')
@@ -101,6 +119,20 @@ function buildCopyArgs(
   return args
 }
 
+/** 纯音频提取：音频包独立可解码，从精确入点复制，无需关键帧 */
+function buildAudioCopyArgs(input: string, startSec: number, dur: number, isAac: boolean, out: string): string[] {
+  return [
+    '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1',
+    '-ss', startSec.toFixed(6),
+    '-i', input,
+    '-t', dur.toFixed(6),
+    '-map', '0:a:0',
+    '-c', 'copy',
+    ...(isAac ? ['-f', 'mp4'] : ['-f', 'matroska']),
+    out
+  ]
+}
+
 /** 转码段参数：对齐源视频的分辨率/SAR/像素格式/profile，时间戳直通 */
 function buildEncodeArgs(
   input: string,
@@ -108,7 +140,8 @@ function buildEncodeArgs(
   dur: number,
   info: MediaInfo,
   enc: EncoderChoice,
-  out: string
+  out: string,
+  videoOnly = false
 ): string[] {
   const args = [
     '-y',
@@ -125,13 +158,14 @@ function buildEncodeArgs(
     '-t',
     dur.toFixed(6),
     '-map',
-    '0:v:0',
-    '-map',
-    '0:a?',
-    '-c:v',
-    enc.name,
-    ...enc.args
+    '0:v:0'
   ]
+  if (videoOnly) {
+    args.push('-an')
+  } else {
+    args.push('-map', '0:a?')
+  }
+  args.push('-c:v', enc.name, ...enc.args)
   const v = info.video!
   const codec = v.codec === 'hevc' ? 'hevc' : 'h264'
   const profile = mapProfile(v.profile, codec)
@@ -140,7 +174,7 @@ function buildEncodeArgs(
   if (!v.pixFmt.includes('10')) args.push('-pix_fmt', 'yuv420p')
   args.push('-vf', `setsar=${safeSar(v.sar)}`)
   args.push('-fps_mode', 'passthrough')
-  args.push('-c:a', 'aac', '-b:a', '192k')
+  if (!videoOnly) args.push('-c:a', 'aac', '-b:a', '192k')
   args.push('-movflags', '+faststart')
   args.push(out)
   return args
@@ -257,8 +291,10 @@ export class CutJobQueue {
     toPct: number,
     ac: AbortSignal,
     notices: string[],
-    forceWhole: boolean
+    forceWhole: boolean,
+    tracks: TrackMode = 'all'
   ): Promise<number> {
+    const videoOnly = tracks === 'video-only'
     const frameDur = 1 / (info.video?.fps || 25)
     const hardEnd = Math.min(endSec, info.durationSec)
     const segs = planSegments({
@@ -291,7 +327,7 @@ export class CutJobQueue {
         a,
         b,
         dur,
-        buildEncodeArgs(inputPath, startSec, dur, info, enc, outPath),
+        buildEncodeArgs(inputPath, startSec, dur, info, enc, outPath, videoOnly),
         ac
       )
       return dur
@@ -307,7 +343,7 @@ export class CutJobQueue {
         fromPct,
         toPct,
         dur,
-        buildCopyArgs(inputPath, copy.startSec, dur, info.video != null, container, outPath),
+        buildCopyArgs(inputPath, copy.startSec, dur, info.video != null, container, outPath, tracks),
         ac
       )
       return dur
@@ -325,7 +361,7 @@ export class CutJobQueue {
         fromPct,
         fromPct + span * 0.6,
         durB,
-        buildCopyArgs(inputPath, copySeg!.startSec, durB, true, 'mp4', segB),
+        buildCopyArgs(inputPath, copySeg!.startSec, durB, true, 'mp4', segB, tracks),
         ac
       )
       const bInfo = await probeMedia(this.ctx.ffprobeBin, segB)
@@ -340,7 +376,7 @@ export class CutJobQueue {
         fromPct + span * 0.6,
         fromPct + span * 0.87,
         durA,
-        buildEncodeArgs(inputPath, encodeSeg.startSec, durA, info, enc, segA),
+        buildEncodeArgs(inputPath, encodeSeg.startSec, durA, info, enc, segA, videoOnly),
         ac
       )
       const listFile = join(workDir, `list_${randomUUID().slice(0, 6)}.txt`)
@@ -377,66 +413,128 @@ export class CutJobQueue {
       this.states.set(jobId, 'running')
 
       this.emitProgress(jobId, 'planning', 2)
-      const info = await probeMedia(this.ctx.ffprobeBin, req.inputPath)
-      const keyframes = info.video
-        ? (
-            await scanKeyframes(this.ctx.ffprobeBin, req.inputPath, {
-              cacheDir: this.ctx.keyframeCacheDir,
-              durationSec: info.durationSec,
-              signal: ac.signal
-            })
-          ).keyframes
-        : []
-      const frameDur = 1 / (info.video?.fps || 25)
-      const tolBase = Math.max(0.15, 2.5 * frameDur)
-
       const mode: CutMode = req.mode
       const container = req.container
-      const isMulti = 'ranges' in req
-      const outputPath = buildOutputPath(req.inputPath, container, isMulti ? `${req.ranges.length}段` : 'seg')
-      tempDir = join(dirname(outputPath), `.aiov-tmp-${jobId.slice(0, 8)}`)
-      await mkdir(tempDir, { recursive: true })
-      const tmpOut = join(tempDir, `out.${container}`)
+      const isMulti = 'clips' in req
 
-      if (info.isVfr && mode === 'smart') {
-        notices.push('源为可变帧率(VFR)，转码段已按原始时间戳直通处理')
+      // 每个源文件只探测/扫描一次（合并任务里同一文件可能被多段引用）
+      const sourceCache = new Map<string, { info: MediaInfo; keyframes: number[] }>()
+      const loadSource = async (p: string): Promise<{ info: MediaInfo; keyframes: number[] }> => {
+        let e = sourceCache.get(p)
+        if (!e) {
+          const info = await probeMedia(this.ctx.ffprobeBin, p)
+          const keyframes = info.video
+            ? (
+                await scanKeyframes(this.ctx.ffprobeBin, p, {
+                  cacheDir: this.ctx.keyframeCacheDir,
+                  durationSec: info.durationSec,
+                  signal: ac.signal
+                })
+              ).keyframes
+            : []
+          e = { info, keyframes }
+          sourceCache.set(p, e)
+          if (info.isVfr && mode === 'smart') {
+            const msg = `${info.fileName} 为可变帧率(VFR)，转码段已按原始时间戳直通处理`
+            if (!notices.includes(msg)) notices.push(msg)
+          }
+        }
+        return e
       }
 
+      let outputPath: string
+      let tmpOut: string
+
       if (!isMulti) {
-        // —— 单段导出 ——
-        const expectedDur = await this.produceRange(
-          jobId, info, keyframes, req.inputPath, mode,
-          req.startSec, req.endSec, container, tmpOut, tempDir, 4, 96, ac.signal, notices, false
+        // ============ 单文件导出 ============
+        const tracks: TrackMode = req.tracks ?? 'all'
+        const { info, keyframes } = await loadSource(req.inputPath)
+        const frameDur = 1 / (info.video?.fps || 25)
+        const tolBase = Math.max(0.15, 2.5 * frameDur)
+        const isAac = info.audio[0]?.codec === 'aac'
+        const outExt = tracks === 'audio-only' ? (isAac ? 'm4a' : 'mka') : container
+        outputPath = buildOutputPath(
+          req.inputPath,
+          outExt,
+          tracks === 'audio-only' ? 'audio' : tracks === 'video-only' ? 'video' : 'seg',
+          req.outputDir,
+          req.outputName
         )
-        this.emitProgress(jobId, 'verifying', 97)
-        let outInfo = await probeMedia(this.ctx.ffprobeBin, tmpOut)
-        if (Math.abs(outInfo.durationSec - expectedDur) > tolBase) {
-          // 拼接异常 → 整段转码重试一次
-          notices.push('拼接结果时长校验未通过，已整段转码兜底')
-          await this.produceRange(
-            jobId, info, keyframes, req.inputPath, mode,
-            req.startSec, req.endSec, container, tmpOut, tempDir, 50, 96, ac.signal, notices, true
+        tempDir = join(dirname(outputPath), `.aiov-tmp-${jobId.slice(0, 8)}`)
+        await mkdir(tempDir, { recursive: true })
+        tmpOut = join(tempDir, `out.${outExt}`)
+
+        if (tracks === 'audio-only') {
+          // —— 音频分离·提取：音频包独立可解码，从精确入点流复制 ——
+          if (info.audio.length === 0) throw new Error('该文件没有音频轨')
+          const dur = Math.min(req.endSec, info.durationSec) - req.startSec
+          await this.runWeighted(
+            jobId,
+            'copy',
+            4,
+            96,
+            dur,
+            buildAudioCopyArgs(req.inputPath, req.startSec, dur, isAac, tmpOut),
+            ac.signal
           )
           this.emitProgress(jobId, 'verifying', 97)
-          outInfo = await probeMedia(this.ctx.ffprobeBin, tmpOut)
-        }
-        if (Math.abs(outInfo.durationSec - expectedDur) > tolBase) {
-          throw new Error(`输出时长校验失败：期望 ${expectedDur.toFixed(2)}s，实际 ${outInfo.durationSec.toFixed(2)}s`)
+          const outInfo = await probeMedia(this.ctx.ffprobeBin, tmpOut)
+          if (Math.abs(outInfo.durationSec - dur) > Math.max(0.2, 3 * (1 / (info.audio[0]?.sampleRate || 44100) * 1024))) {
+            throw new Error(`音频时长校验失败：期望 ${dur.toFixed(2)}s，实际 ${outInfo.durationSec.toFixed(2)}s`)
+          }
+        } else {
+          // —— 单段导出（吸附 / Smart）——
+          const expectedDur = await this.produceRange(
+            jobId, info, keyframes, req.inputPath, mode,
+            req.startSec, req.endSec, container, tmpOut, tempDir, 4, 96, ac.signal, notices, false, tracks
+          )
+          this.emitProgress(jobId, 'verifying', 97)
+          let outInfo = await probeMedia(this.ctx.ffprobeBin, tmpOut)
+          if (Math.abs(outInfo.durationSec - expectedDur) > tolBase) {
+            // 拼接异常 → 整段转码重试一次
+            notices.push('拼接结果时长校验未通过，已整段转码兜底')
+            await this.produceRange(
+              jobId, info, keyframes, req.inputPath, mode,
+              req.startSec, req.endSec, container, tmpOut, tempDir, 50, 96, ac.signal, notices, true, tracks
+            )
+            this.emitProgress(jobId, 'verifying', 97)
+            outInfo = await probeMedia(this.ctx.ffprobeBin, tmpOut)
+          }
+          if (Math.abs(outInfo.durationSec - expectedDur) > tolBase) {
+            throw new Error(`输出时长校验失败：期望 ${expectedDur.toFixed(2)}s，实际 ${outInfo.durationSec.toFixed(2)}s`)
+          }
         }
       } else {
-        // —— 多段合并导出：逐段生成，最后 concat ——
-        const ranges = req.ranges
-        if (ranges.length === 0) throw new Error('片段列表为空')
-        const rawTotal = ranges.reduce((s, r) => s + (Math.min(r.endSec, info.durationSec) - r.startSec), 0)
+        // ============ 多片段合并导出（可跨文件）：逐段生成，最后 concat ============
+        const clips = req.clips
+        if (clips.length === 0) throw new Error('轨道为空')
+        outputPath = buildOutputPath(
+          clips[0].path,
+          container,
+          `${clips.length}段`,
+          req.outputDir,
+          req.outputName
+        )
+        tempDir = join(dirname(outputPath), `.aiov-tmp-${jobId.slice(0, 8)}`)
+        await mkdir(tempDir, { recursive: true })
+        tmpOut = join(tempDir, `out.${container}`)
+
+        const rawTotal = await clips.reduce(async (acc, c) => {
+          const { info } = await loadSource(c.path)
+          return (await acc) + (Math.min(c.endSec, info.durationSec) - c.startSec)
+        }, Promise.resolve(0))
         const segFiles: string[] = []
         const expectedDurs: number[] = []
+        let tolMulti = 0
         let cursor = 4
-        for (const [i, r] of ranges.entries()) {
+        for (const [i, c] of clips.entries()) {
+          const { info, keyframes } = await loadSource(c.path)
+          tolMulti += Math.max(0.15, 2.5 * (1 / (info.video?.fps || 25)))
           const segOut = join(tempDir, `part_${String(i).padStart(3, '0')}.${container}`)
-          const share = (88 * (Math.min(r.endSec, info.durationSec) - r.startSec)) / rawTotal
+          const share = (88 * (Math.min(c.endSec, info.durationSec) - c.startSec)) / (rawTotal || 1)
           const d = await this.produceRange(
-            jobId, info, keyframes, req.inputPath, mode,
-            r.startSec, r.endSec, container, segOut, tempDir, cursor, cursor + share, ac.signal, notices, false
+            jobId, info, keyframes, c.path, mode,
+            c.startSec, c.endSec, container, segOut, tempDir, cursor, cursor + share, ac.signal, notices, false
           )
           expectedDurs.push(d)
           cursor += share
@@ -462,7 +560,6 @@ export class CutJobQueue {
         )
         this.emitProgress(jobId, 'verifying', 97)
         const outInfo = await probeMedia(this.ctx.ffprobeBin, tmpOut)
-        const tolMulti = tolBase * ranges.length
         if (Math.abs(outInfo.durationSec - expectedTotal) > tolMulti) {
           throw new Error(`合并时长校验失败：期望 ${expectedTotal.toFixed(2)}s，实际 ${outInfo.durationSec.toFixed(2)}s`)
         }

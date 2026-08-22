@@ -17,28 +17,33 @@ const hasBinaries = existsSync(FFMPEG) && existsSync(FFPROBE)
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
-describe.skipIf(!hasBinaries)('端到端：多段合并导出', () => {
+describe.skipIf(!hasBinaries)('端到端：跨文件多片段合并', () => {
   const workDir = join(tmpdir(), `aiov-merge-${randomUUID().slice(0, 8)}`)
-  const fixture = join(workDir, 'fixture.mp4')
+  const fixtureA = join(workDir, 'a.mp4')
+  const fixtureB = join(workDir, 'b.mp4')
 
   beforeAll(async () => {
     mkdirSync(workDir, { recursive: true })
-    await runFfmpeg({
-      bin: FFMPEG,
-      args: [
-        '-y', '-hide_banner', '-loglevel', 'error',
-        '-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=30',
-        '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100',
-        '-t', '6',
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-g', '30', '-keyint_min', '30', '-sc_threshold', '0',
-        '-c:a', 'aac',
-        '-shortest',
-        fixture
-      ]
-    })
+    for (const [f, size] of [
+      [fixtureA, '320x240'],
+      [fixtureB, '480x360']
+    ] as const) {
+      await runFfmpeg({
+        bin: FFMPEG,
+        args: [
+          '-y', '-hide_banner', '-loglevel', 'error',
+          '-f', 'lavfi', '-i', `testsrc2=size=${size}:rate=30`,
+          '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100',
+          '-t', '6',
+          '-c:v', 'libx264', '-preset', 'ultrafast', '-g', '30', '-keyint_min', '30', '-sc_threshold', '0',
+          '-c:a', 'aac',
+          '-shortest', f
+        ]
+      })
+    }
   }, 60_000)
 
-  it('三段吸附合并：0.5-1.5 / 2.2-3.0 / 4.0-5.5 → 总时长 ≈ 3.3s，段序正确', async () => {
+  it('跨文件吸附合并：a(0.5-1.5) + b(2.2-3.0) + a(4.0-5.5) → 总时长 4.0s', async () => {
     const events: JobEvent[] = []
     const q = new CutJobQueue({
       ffmpegBin: FFMPEG,
@@ -47,13 +52,12 @@ describe.skipIf(!hasBinaries)('端到端：多段合并导出', () => {
       emit: (e) => events.push(e)
     })
     const jobId = q.submit({
-      inputPath: fixture,
-      container: 'mp4',
       mode: 'keyframe-snap',
-      ranges: [
-        { startSec: 0.5, endSec: 1.5 },
-        { startSec: 2.2, endSec: 3.0 },
-        { startSec: 4.0, endSec: 5.5 }
+      container: 'mp4',
+      clips: [
+        { path: fixtureA, startSec: 0.5, endSec: 1.5 },
+        { path: fixtureB, startSec: 2.2, endSec: 3.0 },
+        { path: fixtureA, startSec: 4.0, endSec: 5.5 }
       ]
     })
 
@@ -69,20 +73,18 @@ describe.skipIf(!hasBinaries)('端到端：多段合并导出', () => {
     expect(final!.state).toBe('done')
     expect(existsSync(final!.outputPath!)).toBe(true)
 
-    // 吸附后各段：0.0-1.5 (1.5s) + 2.0-3.0 (1.0s) + 4.0-5.5 (1.5s) = 4.0s
+    // 吸附后各段：a 0-1.5 (1.5s) + b 2-3.0 (1.0s) + a 4-5.5 (1.5s) = 4.0s
     const outInfo = await probeMedia(FFPROBE, final!.outputPath!)
     expect(Math.abs(outInfo.durationSec - 4.0)).toBeLessThan(0.2)
-
-    // 合并输出内部应有两个拼接点（各段起点都是关键帧）
-    const outKfs = (await scanKeyframes(FFPROBE, final!.outputPath!, { durationSec: outInfo.durationSec })).keyframes
-    expect(outKfs.length).toBeGreaterThanOrEqual(3)
-
-    // 输出流完好
     expect(outInfo.video!.codec).toBe('h264')
     expect(outInfo.audio.length).toBe(1)
+
+    // 三个片段起点都是关键帧
+    const outKfs = (await scanKeyframes(FFPROBE, final!.outputPath!, { durationSec: outInfo.durationSec })).keyframes
+    expect(outKfs.length).toBeGreaterThanOrEqual(3)
   }, 120_000)
 
-  it('smart 多段合并：非关键帧起点，总时长精确', async () => {
+  it('smart 跨文件合并：非关键帧起点，总时长精确', async () => {
     const events: JobEvent[] = []
     const q = new CutJobQueue({
       ffmpegBin: FFMPEG,
@@ -92,12 +94,11 @@ describe.skipIf(!hasBinaries)('端到端：多段合并导出', () => {
       emit: (e) => events.push(e)
     })
     const jobId = q.submit({
-      inputPath: fixture,
-      container: 'mp4',
       mode: 'smart',
-      ranges: [
-        { startSec: 0.5, endSec: 2.5 },
-        { startSec: 3.2, endSec: 5.6 }
+      container: 'mp4',
+      clips: [
+        { path: fixtureA, startSec: 0.5, endSec: 2.5 },
+        { path: fixtureB, startSec: 3.2, endSec: 5.6 }
       ]
     })
     let final: JobResult | undefined

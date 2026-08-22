@@ -36,12 +36,15 @@ function formatRuler(t: number): string {
 export function Timeline(): ReactNode {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
-  const info = useEditor((s) => s.media.info)
-  const keyframes = useEditor((s) => s.media.keyframes)
+  const active = useEditor((s) => s.media.bin.find((b) => b.info.path === s.media.activePath) ?? null)
+  const info = active?.info ?? null
+  const keyframes = active?.keyframes ?? []
+  const waveformUrl = active?.waveformUrl ?? null
   const currentTime = useEditor((s) => s.playback.currentTime)
   const inPoint = useEditor((s) => s.selection.inPoint)
   const outPoint = useEditor((s) => s.selection.outPoint)
-  const waveformUrl = useEditor((s) => s.waveform.url)
+  const clips = useEditor((s) => s.clips)
+  const activePath = useEditor((s) => s.media.activePath)
   const waveformRef = useRef<HTMLImageElement | null>(null)
 
   // 波形图加载（file:// 直载，img-src 已放行）
@@ -180,6 +183,25 @@ export function Timeline(): ReactNode {
       ctx.globalAlpha = 1
     }
 
+    // 当前素材已加入轨道的片段（绿色区块，序号与主轨道一致）
+    clips.forEach((sg, gi) => {
+      if (sg.path !== activePath) return
+      const x1 = xOf(sg.start)
+      const x2 = xOf(sg.end)
+      if (x2 < -10 || x1 > W + 10) return
+      ctx.fillStyle = 'rgba(16, 185, 129, 0.16)'
+      ctx.fillRect(x1, RULER_H + 2, x2 - x1, H - RULER_H - 2)
+      ctx.strokeStyle = 'rgba(16, 185, 129, 0.75)'
+      ctx.lineWidth = 1
+      ctx.strokeRect(Math.round(x1) + 0.5, RULER_H + 2.5, Math.max(1, Math.round(x2 - x1) - 1), H - RULER_H - 3)
+      if (x2 - x1 > 26) {
+        ctx.fillStyle = 'rgba(16, 185, 129, 0.95)'
+        ctx.font = '9px system-ui, sans-serif'
+        ctx.textAlign = 'left'
+        ctx.fillText(String(gi + 1), x1 + 3, RULER_H + 12)
+      }
+    })
+
     // 入出点选区
     if (inPoint != null && outPoint != null && outPoint > inPoint) {
       const x1 = xOf(inPoint)
@@ -217,7 +239,7 @@ export function Timeline(): ReactNode {
     ctx.lineTo(px - 5, 8)
     ctx.closePath()
     ctx.fill()
-  }, [currentTime, inPoint, outPoint, keyframes, duration, tick, timeAtX, xOf, waveformUrl])
+  }, [currentTime, inPoint, outPoint, keyframes, clips, activePath, duration, tick, timeAtX, xOf, waveformUrl])
 
   // 滚轮：Ctrl 缩放 / 平移
   useEffect(() => {
@@ -247,7 +269,8 @@ export function Timeline(): ReactNode {
   /** 拖拽目标更新：入/出点在吸附模式下磁吸关键帧 */
   const applyDrag = useCallback((rawT: number): void => {
     const st = useEditor.getState()
-    const dur = st.media.info?.durationSec ?? 0
+    const active = st.media.bin.find((b) => b.info.path === st.media.activePath)
+    const dur = active?.info.durationSec ?? 0
     const t = Math.min(Math.max(rawT, 0), dur)
     if (drag.current === 'playhead') {
       st.seek(t)
@@ -256,10 +279,11 @@ export function Timeline(): ReactNode {
     const snap = st.selection.mode === 'keyframe-snap'
     let value = t
     let hint: string | null = null
-    if (snap && st.media.keyframes.length > 0 && view.current.pxPerSec > 0) {
+    const activeKfs = active?.keyframes ?? []
+    if (snap && activeKfs.length > 0 && view.current.pxPerSec > 0) {
       let nearest: number | null = null
       let nearestDist = Infinity
-      for (const kf of st.media.keyframes) {
+      for (const kf of activeKfs) {
         const d = Math.abs(kf - t)
         if (d < nearestDist) {
           nearestDist = d
@@ -345,7 +369,7 @@ export function Timeline(): ReactNode {
         </div>
       )}
       <div className="pointer-events-none absolute bottom-1 right-2 text-[10px] text-zinc-600">
-        Ctrl+滚轮缩放 · 滚轮平移 · 拖动入/出点自动吸附关键帧
+        绿色区块=已加片段 · Ctrl+滚轮缩放 · 滚轮平移 · 拖动入/出点自动吸附关键帧
       </div>
     </div>
   )

@@ -1,13 +1,14 @@
 import { app, BrowserWindow, dialog, ipcMain, Notification, shell } from 'electron'
 import { join, basename } from 'path'
-import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, readdirSync } from 'fs'
 import { createHash } from 'crypto'
-import type { CutRequest, MultiCutRequest, WaveformResult } from '../shared/types'
+import type { AppSettings, CutRequest, MultiCutRequest, TranscodeItemRequest, WaveformResult } from '../shared/types'
 import { binaryPaths, getCapabilities, resolveBinDir } from './services/binaries'
 import { probeMedia } from './services/probe'
 import { scanKeyframes } from './services/keyframes'
 import { runFfmpeg } from './services/ffmpeg-runner'
 import { CutJobQueue } from './services/job-queue'
+import { TranscodeQueue } from './services/transcode-queue'
 
 let win: BrowserWindow | null = null
 
@@ -27,6 +28,46 @@ const queue = new CutJobQueue({
     }
   }
 })
+
+const transcodeQueue = new TranscodeQueue({
+  ffmpegBin: bins.ffmpeg,
+  ffprobeBin: bins.ffprobe,
+  emit: (e) => {
+    win?.webContents.send('job:event', e)
+    if (e.state === 'done' && e.outputPath && (!win || !win.isFocused())) {
+      new Notification({ title: '转码完成', body: basename(e.outputPath) }).show()
+    }
+  }
+})
+
+const VIDEO_FILE_RE = /\.(mp4|mkv|mov|webm|avi|ts|flv|m4v|wmv|mpg|mpeg|3gp)$/i
+
+// —— 应用设置（userData/settings.json 持久化）——
+const settingsFile = join(app.getPath('userData'), 'settings.json')
+
+function loadSettings(): AppSettings {
+  try {
+    const s = JSON.parse(readFileSync(settingsFile, 'utf8')) as Partial<AppSettings>
+    return {
+      exportDir: typeof s.exportDir === 'string' ? s.exportDir : null,
+      container: s.container === 'mkv' ? 'mkv' : 'mp4',
+      transcodeConcurrency:
+        typeof s.transcodeConcurrency === 'number' ? Math.min(4, Math.max(1, s.transcodeConcurrency)) : 2
+    }
+  } catch {
+    return { exportDir: null, container: 'mp4', transcodeConcurrency: 2 }
+  }
+}
+
+function saveSettings(patch: Partial<AppSettings>): AppSettings {
+  const next = { ...loadSettings(), ...patch }
+  try {
+    writeFileSync(settingsFile, JSON.stringify(next, null, 2), 'utf8')
+  } catch {
+    // 持久化失败不影响当次使用
+  }
+  return next
+}
 
 // —— 最近文件（持久化，最多 10 条）——
 const recentFile = join(app.getPath('userData'), 'recent.json')
@@ -126,6 +167,65 @@ function registerIpc(): void {
 
   ipcMain.handle('app:recentFiles', () => loadRecent())
 
+  ipcMain.handle('settings:get', () => loadSettings())
+
+  ipcMain.handle('settings:set', (_e, patch: Partial<AppSettings>) => saveSettings(patch))
+
+  ipcMain.handle('dialog:pickDir', async () => {
+    const r = await dialog.showOpenDialog(win!, { title: '选择导出目录', properties: ['openDirectory'] })
+    return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]
+  })
+
+  // 自定义标题栏的窗口控制
+  ipcMain.handle('win:minimize', () => win?.minimize())
+  ipcMain.handle('win:toggleMaximize', () => {
+    if (!win) return
+    if (win.isMaximized()) win.unmaximize()
+    else win.maximize()
+  })
+  ipcMain.handle('win:close', () => win?.close())
+
+  // —— 批量转码 ——
+  ipcMain.handle('transcode:submit', (_e, items: TranscodeItemRequest[]) => {
+    const outputDir = loadSettings().exportDir ?? undefined
+    return { jobIds: items.map((it) => transcodeQueue.submit({ ...it, outputDir: it.outputDir ?? outputDir })) }
+  })
+
+  ipcMain.handle('transcode:cancel', (_e, jobId: string) => {
+    transcodeQueue.cancel(jobId)
+  })
+
+  ipcMain.handle('transcode:pickFiles', async () => {
+    const r = await dialog.showOpenDialog(win!, {
+      title: '选择视频文件',
+      filters: [{ name: '视频文件', extensions: ['mp4', 'mkv', 'mov', 'webm', 'avi', 'ts', 'flv', 'm4v', 'wmv', 'mpg', 'mpeg', '3gp'] }],
+      properties: ['openFile', 'multiSelections']
+    })
+    return r.canceled ? [] : r.filePaths
+  })
+
+  ipcMain.handle('transcode:pickFolder', async () => {
+    const r = await dialog.showOpenDialog(win!, { title: '选择文件夹', properties: ['openDirectory'] })
+    if (r.canceled || r.filePaths.length === 0) return []
+    try {
+      // 递归列出文件夹内视频（上限 500）
+      const all = readdirSync(r.filePaths[0], { recursive: true, encoding: 'utf8' }) as string[]
+      return all
+        .filter((f) => VIDEO_FILE_RE.test(f))
+        .slice(0, 500)
+        .map((f) => join(r.filePaths[0], f))
+    } catch {
+      return []
+    }
+  })
+
+  ipcMain.handle('transcode:setConcurrency', (_e, n: number) => {
+    const clamped = Math.min(4, Math.max(1, Math.floor(n) || 2))
+    transcodeQueue.setConcurrency(clamped)
+    saveSettings({ transcodeConcurrency: clamped })
+    return clamped
+  })
+
   ipcMain.handle('cut:submit', (_e, req: CutRequest | MultiCutRequest) => ({ jobId: queue.submit(req) }))
 
   ipcMain.handle('job:cancel', (_e, jobId: string) => {
@@ -144,6 +244,7 @@ function createWindow(): void {
     minHeight: 680,
     backgroundColor: '#141414',
     show: false,
+    frame: false,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -156,6 +257,8 @@ function createWindow(): void {
     }
   })
   win.on('ready-to-show', () => win?.show())
+  win.on('maximize', () => win?.webContents.send('win:maximizedChanged', true))
+  win.on('unmaximize', () => win?.webContents.send('win:maximizedChanged', false))
   win.on('closed', () => {
     win = null
   })
@@ -184,6 +287,7 @@ function createWindow(): void {
 app.whenReady().then(() => {
   registerIpc()
   createWindow()
+  transcodeQueue.setConcurrency(loadSettings().transcodeConcurrency)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

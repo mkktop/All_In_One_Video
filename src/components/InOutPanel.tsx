@@ -17,8 +17,9 @@ function MiniBtn({ children, onClick, disabled, title }: { children: ReactNode; 
 }
 
 export function InOutPanel(): ReactNode {
-  const info = useEditor((s) => s.media.info)
-  const keyframes = useEditor((s) => s.media.keyframes)
+  const active = useEditor((s) => s.media.bin.find((b) => b.info.path === s.media.activePath) ?? null)
+  const info = active?.info ?? null
+  const keyframes = active?.keyframes ?? []
   const inPoint = useEditor((s) => s.selection.inPoint)
   const outPoint = useEditor((s) => s.selection.outPoint)
   const mode = useEditor((s) => s.selection.mode)
@@ -27,7 +28,8 @@ export function InOutPanel(): ReactNode {
   const setIn = useEditor((s) => s.setIn)
   const setOut = useEditor((s) => s.setOut)
   const clearSelection = useEditor((s) => s.clearSelection)
-  const exportCut = useEditor((s) => s.exportCut)
+  const openExportDialog = useEditor((s) => s.openExportDialog)
+  const hasAudio = (info?.audio.length ?? 0) > 0
 
   const fps = info?.video?.fps ?? 25
   const ready = info != null && inPoint != null && outPoint != null && outPoint > inPoint
@@ -111,13 +113,34 @@ export function InOutPanel(): ReactNode {
 
       <button
         disabled={!ready}
-        onClick={() => void exportCut()}
-        className={`mt-3 w-full rounded-md py-2 text-xs font-semibold text-white transition-colors disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-500 ${
-          mode === 'smart' ? 'bg-violet-600 hover:bg-violet-500' : 'bg-sky-600 hover:bg-sky-500'
-        }`}
+        onClick={() => openExportDialog('cut')}
+        className="mt-3 w-full rounded-full py-2 text-xs font-semibold text-white shadow transition-colors disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-500 disabled:shadow-none"
+        style={ready ? { background: '#6366F1' } : undefined}
+        onMouseEnter={(e) => ready && (e.currentTarget.style.background = '#5457E0')}
+        onMouseLeave={(e) => ready && (e.currentTarget.style.background = '#6366F1')}
       >
         {mode === 'smart' ? '导出选段（帧级精确 · Smart）' : '导出选段（流复制 · 无损秒切）'}
       </button>
+
+      {/* 音频分离：均作用于入出点选区（未选则全片），流复制无损 */}
+      <div className="mt-2 flex gap-2">
+        <button
+          disabled={!info || !hasAudio}
+          title={hasAudio ? '提取音频轨为独立音频文件（无损复制）' : '该文件没有音频轨'}
+          onClick={() => openExportDialog('audio')}
+          className="flex-1 rounded-full border border-zinc-700 bg-zinc-800 py-1.5 text-[11px] font-medium text-zinc-300 transition-colors hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          🎵 提取音频{ready ? '' : '（全片）'}
+        </button>
+        <button
+          disabled={!info || !info.video}
+          title="导出不含音轨的视频（无损复制）"
+          onClick={() => openExportDialog('video')}
+          className="flex-1 rounded-full border border-zinc-700 bg-zinc-800 py-1.5 text-[11px] font-medium text-zinc-300 transition-colors hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          🎬 仅视频{ready ? '' : '（全片）'}
+        </button>
+      </div>
     </section>
   )
 }
