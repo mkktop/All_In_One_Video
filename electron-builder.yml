@@ -2,6 +2,9 @@ appId: com.aiov.allinonevideo
 productName: All In One Video
 directories:
   output: dist
+# 产物文件名禁用空格：electron-builder 清单里会把空格转连字符，而 GitHub 上传会把空格转点号，
+# 三者不一致会让 electron-updater 下载 404。显式命名让 本地文件 = latest.yml url = Release 资产名。
+artifactName: All-In-One-Video-${version}-${arch}.${ext}
 # 更新源：electron-updater 从 GitHub Releases 读取 latest.yml 并下载差量更新
 publish:
   provider: github
