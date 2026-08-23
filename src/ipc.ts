@@ -1,4 +1,4 @@
-import type { JobEvent, KeyframeScanProgress, WaveformResult } from '@shared/types'
+import type { JobEvent, KeyframeScanProgress, UpdateState, WaveformResult } from '@shared/types'
 import type { OpenMediaResult } from '../electron/preload'
 
 export function onJobEvent(cb: (e: JobEvent) => void): () => void {
@@ -19,6 +19,10 @@ export function onWaveform(cb: (r: WaveformResult) => void): () => void {
 
 export function onMaximizedChanged(cb: (maximized: boolean) => void): () => void {
   return window.aiov.on('win:maximizedChanged', (p) => cb(p as boolean))
+}
+
+export function onUpdateState(cb: (s: UpdateState) => void): () => void {
+  return window.aiov.on('app:updateState', (p) => cb(p as UpdateState))
 }
 
 /** 本地视频的 file:// 源地址（webSecurity:false 下 <video> 直接原生加载，Range/索引由 Chromium 处理） */

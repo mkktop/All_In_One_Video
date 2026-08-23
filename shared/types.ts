@@ -146,6 +146,14 @@ export interface KeyframeScanProgress {
   done: boolean
 }
 
+/** 应用更新状态（主进程 → 顶栏提示） */
+export interface UpdateState {
+  phase: 'available' | 'downloading' | 'ready'
+  version: string
+  /** 下载进度 0-100 */
+  percent: number | null
+}
+
 /** planner 产出的段计划，smart cut 用 */
 export type Segment =
   | { kind: 'copy'; startSec: number; endSec: number }

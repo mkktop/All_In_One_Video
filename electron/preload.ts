@@ -8,6 +8,7 @@ import type {
   MediaInfo,
   MultiCutRequest,
   TranscodeItemRequest,
+  UpdateState,
   WaveformResult
 } from '../shared/types'
 
@@ -16,10 +17,10 @@ export interface OpenMediaResult {
   keyframes: number[]
 }
 
-const EVENT_CHANNELS = ['job:event', 'media:keyframeProgress', 'media:auto-opened', 'media:waveform', 'win:maximizedChanged'] as const
+const EVENT_CHANNELS = ['job:event', 'media:keyframeProgress', 'media:auto-opened', 'media:waveform', 'win:maximizedChanged', 'app:updateState'] as const
 export type EventChannel = (typeof EVENT_CHANNELS)[number]
 
-type EventPayload = JobEvent | KeyframeScanProgress | OpenMediaResult | WaveformResult | boolean
+type EventPayload = JobEvent | KeyframeScanProgress | OpenMediaResult | WaveformResult | boolean | UpdateState
 
 const api = {
   capabilities: (): Promise<Capabilities> => ipcRenderer.invoke('app:capabilities'),
@@ -59,6 +60,12 @@ const api = {
   pickVideoFolder: (): Promise<string[]> => ipcRenderer.invoke('transcode:pickFolder'),
 
   setTranscodeConcurrency: (n: number): Promise<number> => ipcRenderer.invoke('transcode:setConcurrency', n),
+
+  /** 开始下载已检测到的新版本 */
+  downloadUpdate: (): Promise<void> => ipcRenderer.invoke('update:download').then(() => undefined),
+
+  /** 退出并安装已下载的更新（静默安装 + 重启） */
+  installUpdate: (): Promise<void> => ipcRenderer.invoke('update:install'),
 
   openPath: (p: string): Promise<void> => ipcRenderer.invoke('shell:openPath', p),
 

@@ -9,6 +9,7 @@ import { scanKeyframes } from './services/keyframes'
 import { runFfmpeg } from './services/ffmpeg-runner'
 import { CutJobQueue } from './services/job-queue'
 import { TranscodeQueue } from './services/transcode-queue'
+import { setupAutoUpdate } from './services/updater'
 
 let win: BrowserWindow | null = null
 
@@ -291,6 +292,10 @@ app.whenReady().then(() => {
   Menu.setApplicationMenu(null)
   registerIpc()
   createWindow()
+  // 打包版启动后自动检查 GitHub Release 更新（dev 下没有 app-update.yml，跳过）
+  if (app.isPackaged) {
+    setupAutoUpdate((s) => win?.webContents.send('app:updateState', s))
+  }
   transcodeQueue.setConcurrency(loadSettings().transcodeConcurrency)
 
   app.on('activate', () => {

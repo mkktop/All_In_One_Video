@@ -1,6 +1,6 @@
 {
   "name": "all-in-one-video",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "All In One Video — 快速无损视频剪辑工具",
   "main": "./out/main/index.js",
   "author": "aiov",
@@ -12,9 +12,10 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "build:win": "electron-vite build && electron-builder --win --config electron-builder.yml --config.electronDist=node_modules/electron/dist"
+    "build:win": "electron-vite build && electron-builder --win --config electron-builder.yml --publish never --config.electronDist=node_modules/electron/dist"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "zustand": "^5.0.15"

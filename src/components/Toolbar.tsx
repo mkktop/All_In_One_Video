@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useEditor } from '@/stores/editor'
 import { formatShort } from '@/lib/timecode'
-import { onMaximizedChanged } from '@/ipc'
+import { onMaximizedChanged, onUpdateState } from '@/ipc'
+import type { UpdateState } from '@shared/types'
 
 /** 应用主强调色（靛蓝）及悬停态 */
 export const ACCENT = '#6366F1'
@@ -59,6 +60,52 @@ function GearIcon(): ReactNode {
       <circle cx="12" cy="12" r="3" />
       <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h0a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h0a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v0a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z" />
     </svg>
+  )
+}
+
+/** 更新提示：有新版 → 点击下载 → 进度 → 重启安装（无更新/不支持时隐藏） */
+function UpdateChip(): ReactNode {
+  const [state, setState] = useState<UpdateState | null>(null)
+
+  useEffect(() => onUpdateState(setState), [])
+
+  if (!state) return null
+
+  if (state.phase === 'downloading') {
+    return (
+      <span
+        className="rounded-full border px-3 py-1.5 text-xs"
+        style={{ borderColor: ACCENT, color: ACCENT }}
+      >
+        正在下载 {state.percent ?? 0}%
+      </span>
+    )
+  }
+
+  if (state.phase === 'ready') {
+    return (
+      <button
+        title={`v${state.version} 已就绪，重启后生效`}
+        onClick={() => void window.aiov.installUpdate()}
+        className="rounded-full px-3 py-1.5 text-xs font-medium text-white shadow transition-colors"
+        style={{ background: ACCENT }}
+        onMouseEnter={(e) => (e.currentTarget.style.background = ACCENT_HOVER)}
+        onMouseLeave={(e) => (e.currentTarget.style.background = ACCENT)}
+      >
+        重启更新
+      </button>
+    )
+  }
+
+  return (
+    <button
+      title={`下载新版本 v${state.version}`}
+      onClick={() => void window.aiov.downloadUpdate()}
+      className="rounded-full border px-3 py-1.5 text-xs transition-colors hover:bg-white/10"
+      style={{ borderColor: ACCENT, color: ACCENT }}
+    >
+      新版本 v{state.version}
+    </button>
   )
 }
 
@@ -222,6 +269,7 @@ export function Toolbar(): ReactNode {
 
       {/* 右侧操作 */}
       <div className="titlebar-no-drag flex shrink-0 items-center gap-1">
+        <UpdateChip />
         <button
           title="撤销（Ctrl+Z）"
           disabled={!canUndo}

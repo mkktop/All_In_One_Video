@@ -2,6 +2,11 @@ appId: com.aiov.allinonevideo
 productName: All In One Video
 directories:
   output: dist
+# 更新源：electron-updater 从 GitHub Releases 读取 latest.yml 并下载差量更新
+publish:
+  provider: github
+  owner: mkktop
+  repo: All_In_One_Video
 # 只保留中英语言包，去掉 Electron 自带的 50+ 语言
 electronLanguages:
   - zh-CN
