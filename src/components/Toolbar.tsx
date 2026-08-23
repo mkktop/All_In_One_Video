@@ -69,7 +69,7 @@ function UpdateChip(): ReactNode {
 
   useEffect(() => onUpdateState(setState), [])
 
-  if (!state) return null
+  if (!state || (state.phase !== 'available' && state.phase !== 'downloading' && state.phase !== 'ready')) return null
 
   if (state.phase === 'downloading') {
     return (
@@ -82,10 +82,11 @@ function UpdateChip(): ReactNode {
     )
   }
 
+  const tip = `v${state.version} 更新内容：\n${state.notes ?? '暂无更新说明'}\n\n（点击${state.phase === 'ready' ? '重启后生效' : '开始下载'}）`
   if (state.phase === 'ready') {
     return (
       <button
-        title={`v${state.version} 已就绪，重启后生效`}
+        title={tip}
         onClick={() => void window.aiov.installUpdate()}
         className="rounded-full px-3 py-1.5 text-xs font-medium text-white shadow transition-colors"
         style={{ background: ACCENT }}
@@ -99,7 +100,7 @@ function UpdateChip(): ReactNode {
 
   return (
     <button
-      title={`下载新版本 v${state.version}`}
+      title={tip}
       onClick={() => void window.aiov.downloadUpdate()}
       className="rounded-full border px-3 py-1.5 text-xs transition-colors hover:bg-white/10"
       style={{ borderColor: ACCENT, color: ACCENT }}
@@ -114,6 +115,13 @@ function SettingsMenu({ onClose }: { onClose: () => void }): ReactNode {
   const settings = useEditor((s) => s.settings)
   const saveSettings = useEditor((s) => s.saveSettings)
   const ref = useRef<HTMLDivElement>(null)
+  const [version, setVersion] = useState('')
+  const [upState, setUpState] = useState<UpdateState | null>(null)
+
+  useEffect(() => {
+    void window.aiov.appVersion().then(setVersion)
+    return onUpdateState(setUpState)
+  }, [])
 
   useEffect(() => {
     const onDown = (e: MouseEvent): void => {
@@ -169,6 +177,30 @@ function SettingsMenu({ onClose }: { onClose: () => void }): ReactNode {
               {c}
             </button>
           ))}
+        </div>
+      </div>
+
+      <div className="mt-3 border-t border-zinc-700 pt-3">
+        <p className="mb-1.5 text-zinc-400">软件更新{version && <span className="ml-1 text-zinc-600">当前 v{version}</span>}</p>
+        <div className="flex items-center gap-2">
+          <button
+            disabled={upState?.phase === 'checking'}
+            onClick={() => void window.aiov.checkUpdate()}
+            className="shrink-0 rounded border border-zinc-600 px-2.5 py-1.5 text-zinc-300 transition-colors hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {upState?.phase === 'checking' ? '检查中…' : '检查更新'}
+          </button>
+          <span className="min-w-0 flex-1 truncate text-zinc-500" title={upState?.notes ?? undefined}>
+            {upState == null
+              ? '启动时会自动检查'
+              : upState.phase === 'available'
+                ? `发现新版本 v${upState.version}，点顶栏提示下载`
+                : upState.phase === 'downloading'
+                  ? `下载中 ${upState.percent ?? 0}%`
+                  : upState.phase === 'ready'
+                    ? '已就绪，点顶栏「重启更新」'
+                    : (upState.message ?? '已是最新版本')}
+          </span>
         </div>
       </div>
     </div>

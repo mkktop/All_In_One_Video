@@ -151,6 +151,8 @@ async function openMedia(filePath: string): Promise<{ info: Awaited<ReturnType<t
 function registerIpc(): void {
   ipcMain.handle('app:capabilities', () => getCapabilities(binDir))
 
+  ipcMain.handle('app:version', () => app.getVersion())
+
   ipcMain.handle('media:open', async () => {
     const r = await dialog.showOpenDialog(win!, {
       title: '打开视频文件',
@@ -292,10 +294,7 @@ app.whenReady().then(() => {
   Menu.setApplicationMenu(null)
   registerIpc()
   createWindow()
-  // 打包版启动后自动检查 GitHub Release 更新（dev 下没有 app-update.yml，跳过）
-  if (app.isPackaged) {
-    setupAutoUpdate((s) => win?.webContents.send('app:updateState', s))
-  }
+  setupAutoUpdate((s) => win?.webContents.send('app:updateState', s))
   transcodeQueue.setConcurrency(loadSettings().transcodeConcurrency)
 
   app.on('activate', () => {

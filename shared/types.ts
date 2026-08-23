@@ -148,10 +148,15 @@ export interface KeyframeScanProgress {
 
 /** 应用更新状态（主进程 → 顶栏提示） */
 export interface UpdateState {
-  phase: 'available' | 'downloading' | 'ready'
+  phase: 'checking' | 'available' | 'downloading' | 'ready' | 'none'
+  /** 新版本号（available/downloading/ready 时有效） */
   version: string
   /** 下载进度 0-100 */
   percent: number | null
+  /** phase=none 时的说明（已是最新 / 失败原因） */
+  message?: string
+  /** 更新说明摘要（GitHub Release 正文；拉取失败为 null） */
+  notes?: string | null
 }
 
 /** planner 产出的段计划，smart cut 用 */

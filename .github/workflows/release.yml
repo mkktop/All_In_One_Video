@@ -57,6 +57,8 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          # Release 正文取自仓库根目录的更新说明文件（应用内更新提示也读取它）
+          body_path: RELEASE_NOTES.md
           files: |
             dist/*.exe
             dist/*.dmg

@@ -25,6 +25,8 @@ type EventPayload = JobEvent | KeyframeScanProgress | OpenMediaResult | Waveform
 const api = {
   capabilities: (): Promise<Capabilities> => ipcRenderer.invoke('app:capabilities'),
 
+  appVersion: (): Promise<string> => ipcRenderer.invoke('app:version'),
+
   openMedia: (): Promise<OpenMediaResult | null> => ipcRenderer.invoke('media:open'),
 
   openMediaPath: (path: string): Promise<OpenMediaResult> => ipcRenderer.invoke('media:openPath', path),
@@ -60,6 +62,9 @@ const api = {
   pickVideoFolder: (): Promise<string[]> => ipcRenderer.invoke('transcode:pickFolder'),
 
   setTranscodeConcurrency: (n: number): Promise<number> => ipcRenderer.invoke('transcode:setConcurrency', n),
+
+  /** 手动检查更新（结果通过 app:updateState 事件返回） */
+  checkUpdate: (): Promise<void> => ipcRenderer.invoke('update:check'),
 
   /** 开始下载已检测到的新版本 */
   downloadUpdate: (): Promise<void> => ipcRenderer.invoke('update:download').then(() => undefined),
