@@ -4,6 +4,7 @@ import { mkdir, rm, rename } from 'fs/promises'
 import { basename, dirname, join } from 'path'
 import type { CutMode, CutRequest, JobEvent, JobState, MediaInfo, MultiCutRequest, TrackMode } from '../../shared/types'
 import { planSegments } from '../../shared/planner'
+import { mergeIncompatibility } from '../../shared/compat'
 import { FfmpegError, runFfmpeg } from './ffmpeg-runner'
 import { probeMedia } from './probe'
 import { scanKeyframes } from './keyframes'
@@ -71,6 +72,11 @@ function mapProfile(sourceProfile: string | null, codec: 'h264' | 'hevc'): strin
     if (p.includes('main')) return 'main'
   }
   return null
+}
+
+/** h264_amf 等硬件编码器不支持 baseline profile（直接 EINVAL），统一升到 main（其超集） */
+function encoderSafeProfile(profile: string | null, enc: EncoderChoice): string | null {
+  return profile === 'baseline' && enc.isHardware ? 'main' : profile
 }
 
 /** 源 SAR 形如 "1:1"；异常值（N/A 等）按 1:1 处理 */
@@ -168,7 +174,7 @@ function buildEncodeArgs(
   args.push('-c:v', enc.name, ...enc.args)
   const v = info.video!
   const codec = v.codec === 'hevc' ? 'hevc' : 'h264'
-  const profile = mapProfile(v.profile, codec)
+  const profile = encoderSafeProfile(mapProfile(v.profile, codec), enc)
   if (profile) args.push('-profile:v', profile)
   // 8bit 源强制 yuv420p；10bit 源保留原像素格式避免色彩/位深跳变
   if (!v.pixFmt.includes('10')) args.push('-pix_fmt', 'yuv420p')
@@ -185,6 +191,67 @@ function writeConcatList(file: string, parts: string[]): void {
     .map((p) => `file '${p.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`)
     .join('\n')
   writeFileSync(file, body + '\n', 'utf8')
+}
+
+/**
+ * 参数不一致源的统一转码段：以基准素材（ref）为模板归一分辨率/帧率/SAR/像素格式，
+ * 音轨按基准对齐（基准有音轨而该源没有则补静音，基准无音轨则全部丢弃），
+ * 保证各段流参数一致，可安全流复制拼接。
+ */
+function buildUniformEncodeArgs(
+  input: string,
+  startSec: number,
+  dur: number,
+  ref: MediaInfo,
+  sourceHasAudio: boolean,
+  enc: EncoderChoice,
+  container: 'mp4' | 'mkv',
+  out: string
+): string[] {
+  const args = [
+    '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1',
+    '-ss', startSec.toFixed(6),
+    '-i', input
+  ]
+  const refV = ref.video
+  const refA = ref.audio[0]
+  if (refV && refA && !sourceHasAudio) {
+    // 该源无音轨而基准有 → 补等长静音，避免拼接后音轨中途断流
+    const layout = refA.channels === 1 ? 'mono' : refA.channels === 6 ? '5.1' : 'stereo'
+    args.push('-f', 'lavfi', '-t', dur.toFixed(6), '-i', `anullsrc=r=${refA.sampleRate || 48000}:cl=${layout}`)
+  }
+  args.push('-t', dur.toFixed(6))
+  if (refV) {
+    args.push('-map', '0:v:0')
+    if (refA) {
+      args.push('-map', sourceHasAudio ? '0:a:0' : '1:a:0', '-shortest')
+    } else {
+      args.push('-an')
+    }
+    args.push('-c:v', enc.name, ...enc.args)
+    const codec = refV.codec === 'hevc' ? 'hevc' : 'h264'
+    const profile = encoderSafeProfile(mapProfile(refV.profile, codec), enc)
+    if (profile) args.push('-profile:v', profile)
+    // 8bit 基准强制 yuv420p；10bit 基准保留原像素格式避免位深跳变
+    if (!refV.pixFmt.includes('10')) args.push('-pix_fmt', 'yuv420p')
+    args.push(
+      '-vf',
+      `scale=${refV.width}:${refV.height}:force_original_aspect_ratio=decrease,pad=${refV.width}:${refV.height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${refV.fps || 25}`
+    )
+    args.push('-fps_mode', 'passthrough')
+    if (refA) {
+      args.push('-c:a', 'aac', '-b:a', '192k', '-ar', String(refA.sampleRate || 48000), '-ac', String(refA.channels || 2))
+    }
+  } else {
+    // 基准素材无视频轨：统一输出纯音频
+    args.push(
+      '-vn', '-map', '0:a:0', '-c:a', 'aac', '-b:a', '192k',
+      '-ar', String(refA?.sampleRate || 48000), '-ac', String(refA?.channels || 2)
+    )
+  }
+  if (container === 'mp4') args.push('-movflags', '+faststart')
+  args.push(out)
+  return args
 }
 
 /**
@@ -403,6 +470,34 @@ export class CutJobQueue {
     return encodeWhole(fromPct, toPct)
   }
 
+  /** 参数不一致合并的段生成：整段转码并归一到基准素材参数（精确入出点） */
+  private async produceUniformRange(
+    jobId: string,
+    info: MediaInfo,
+    ref: MediaInfo,
+    inputPath: string,
+    startSec: number,
+    endSec: number,
+    container: 'mp4' | 'mkv',
+    outPath: string,
+    fromPct: number,
+    toPct: number,
+    ac: AbortSignal,
+    enc: EncoderChoice
+  ): Promise<number> {
+    const dur = Math.min(endSec, info.durationSec) - startSec
+    await this.runWeighted(
+      jobId,
+      'encode',
+      fromPct,
+      toPct,
+      dur,
+      buildUniformEncodeArgs(inputPath, startSec, dur, ref, info.audio.length > 0, enc, container, outPath),
+      ac
+    )
+    return dur
+  }
+
   private async run(jobId: string, req: AnyCutRequest): Promise<void> {
     const ac = this.controllers.get(jobId)!
     const started = Date.now()
@@ -519,28 +614,47 @@ export class CutJobQueue {
         await mkdir(tempDir, { recursive: true })
         tmpOut = join(tempDir, `out.${container}`)
 
-        const rawTotal = await clips.reduce(async (acc, c) => {
-          const { info } = await loadSource(c.path)
-          return (await acc) + (Math.min(c.endSec, info.durationSec) - c.startSec)
-        }, Promise.resolve(0))
+        // 预检各片段源参数：流复制 concat 假设所有输入流参数一致，帧率不同会拉伸
+        // 时间戳（如 24fps+60fps 拼接时长翻倍）、编码不同会产出损坏文件；
+        // 不一致时整段统一转码为首个素材的参数（精确入出点，无关键帧吸附）
+        const distinctPaths = [...new Set(clips.map((c) => c.path))]
+        await Promise.all(distinctPaths.map((p) => loadSource(p)))
+        const refInfo = sourceCache.get(clips[0].path)!.info
+        const incompat = mergeIncompatibility(distinctPaths.map((p) => sourceCache.get(p)!.info))
+        const uniform = incompat != null
+        let uniformEnc: EncoderChoice | null = null
+        if (uniform) {
+          notices.push(`素材${incompat}，已统一转码为首个素材的参数后合并`)
+          uniformEnc = await this.encoderFor(refInfo.video?.codec ?? 'h264')
+        }
+
+        const rawTotal = clips.reduce(
+          (acc, c) => acc + (Math.min(c.endSec, sourceCache.get(c.path)!.info.durationSec) - c.startSec),
+          0
+        )
         const segFiles: string[] = []
         const expectedDurs: number[] = []
         let tolMulti = 0
         let cursor = 4
         for (const [i, c] of clips.entries()) {
-          const { info, keyframes } = await loadSource(c.path)
-          tolMulti += Math.max(0.15, 2.5 * (1 / (info.video?.fps || 25)))
+          const { info, keyframes } = sourceCache.get(c.path)!
+          tolMulti += Math.max(0.15, 2.5 / ((uniform ? refInfo.video?.fps : info.video?.fps) || 25))
           const segOut = join(tempDir, `part_${String(i).padStart(3, '0')}.${container}`)
           const share = (88 * (Math.min(c.endSec, info.durationSec) - c.startSec)) / (rawTotal || 1)
-          const d = await this.produceRange(
-            jobId, info, keyframes, c.path, mode,
-            c.startSec, c.endSec, container, segOut, tempDir, cursor, cursor + share, ac.signal, notices, false
-          )
+          const d = uniform
+            ? await this.produceUniformRange(
+                jobId, info, refInfo, c.path, c.startSec, c.endSec, container, segOut,
+                cursor, cursor + share, ac.signal, uniformEnc!
+              )
+            : await this.produceRange(
+                jobId, info, keyframes, c.path, mode,
+                c.startSec, c.endSec, container, segOut, tempDir, cursor, cursor + share, ac.signal, notices, false
+              )
           expectedDurs.push(d)
           cursor += share
           segFiles.push(segOut)
         }
-        // 吸附模式各段实际从关键帧开始，期望总时长 = 各段实际时长之和
+        // 吸附模式各段实际从关键帧开始，期望总时长 = 各段实际时长之和（统一转码段为精确时长）
         const expectedTotal = expectedDurs.reduce((a, b) => a + b, 0)
         writeConcatList(join(tempDir, 'list.txt'), segFiles)
         await this.runWeighted(
@@ -585,10 +699,16 @@ export class CutJobQueue {
         this.ctx.emit({ jobId, state: 'canceled', durationMs: Date.now() - started })
       } else {
         this.states.set(jobId, 'failed')
+        const msg =
+          err instanceof FfmpegError && err.stderrTail
+            ? `${err.message}：${err.stderrTail.split('\n').filter(Boolean).slice(-2).join(' | ')}`
+            : err instanceof Error
+              ? err.message
+              : String(err)
         this.ctx.emit({
           jobId,
           state: 'failed',
-          error: err instanceof Error ? err.message : String(err),
+          error: msg,
           durationMs: Date.now() - started
         })
       }

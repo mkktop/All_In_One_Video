@@ -24,9 +24,11 @@ describe.skipIf(!hasBinaries)('端到端：跨文件多片段合并', () => {
 
   beforeAll(async () => {
     mkdirSync(workDir, { recursive: true })
+    // 两个素材同参数（分辨率一致）：本文件测吸附/流复制路径；
+    // 参数不一致的统一转码路径由 merge-mixed.integration.test.ts 覆盖
     for (const [f, size] of [
       [fixtureA, '320x240'],
-      [fixtureB, '480x360']
+      [fixtureB, '320x240']
     ] as const) {
       await runFfmpeg({
         bin: FFMPEG,

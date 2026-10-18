@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useEditor } from '@/stores/editor'
 import { ACCENT, ACCENT_HOVER } from '@/components/Toolbar'
+import { mergeIncompatibility } from '@shared/compat'
 
 const KIND_TITLE: Record<string, string> = {
   cut: '导出视频',
@@ -15,6 +16,7 @@ export function ExportDialog(): ReactNode {
   const info = useEditor((s) => s.media.bin.find((b) => b.info.path === s.media.activePath)?.info ?? null)
   const settings = useEditor((s) => s.settings)
   const clips = useEditor((s) => s.clips)
+  const bin = useEditor((s) => s.media.bin)
   const saveSettings = useEditor((s) => s.saveSettings)
   const confirmExport = useEditor((s) => s.confirmExport)
   const closeExportDialog = useEditor((s) => s.closeExportDialog)
@@ -36,6 +38,15 @@ export function ExportDialog(): ReactNode {
   const dir = settings.exportDir ?? info.path.replace(/[\\/][^\\/]+$/, '')
   const isAac = info.audio[0]?.codec === 'aac'
   const ext = dialog.kind === 'audio' ? (isAac ? 'm4a' : 'mka') : settings.container
+  // 合并预检：各片段源参数不一致时将统一转码（与主进程 job-queue 的判定保持一致）
+  const mergeIncompat =
+    dialog.kind === 'merge'
+      ? mergeIncompatibility(
+          [...new Set(clips.map((c) => c.path))]
+            .map((p) => bin.find((b) => b.info.path === p)?.info)
+            .filter((x): x is NonNullable<typeof x> => x != null)
+        )
+      : null
 
   const submit = (): void => {
     void confirmExport(name)
@@ -86,15 +97,21 @@ export function ExportDialog(): ReactNode {
             更改…
           </button>
         </div>
-        <p className="mb-4 text-[11px] text-zinc-600">
-          {dialog.kind === 'merge'
-            ? `将按顺序合并 ${clips.length} 个片段为一个文件`
-            : dialog.kind === 'audio'
-              ? '音频流无损复制，速度极快'
-              : dialog.kind === 'video'
-                ? '去除音轨，画面无损'
-                : '未设入出点时导出全片'}
-        </p>
+        {dialog.kind === 'merge' ? (
+          mergeIncompat ? (
+            <p className="mb-4 rounded bg-amber-500/10 px-1.5 py-1.5 text-[11px] leading-4 text-amber-400">
+              片段素材{mergeIncompat}，将统一转码为首个素材的参数后合并（有重编码损耗）
+            </p>
+          ) : (
+            <p className="mb-4 text-[11px] text-zinc-600">将按顺序合并 {clips.length} 个片段为一个文件</p>
+          )
+        ) : dialog.kind === 'audio' ? (
+          <p className="mb-4 text-[11px] text-zinc-600">音频流无损复制，速度极快</p>
+        ) : dialog.kind === 'video' ? (
+          <p className="mb-4 text-[11px] text-zinc-600">去除音轨，画面无损</p>
+        ) : (
+          <p className="mb-4 text-[11px] text-zinc-600">未设入出点时导出全片</p>
+        )}
 
         <div className="flex justify-end gap-2">
           <button
